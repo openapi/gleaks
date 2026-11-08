@@ -43,7 +43,7 @@ that nothing has leaked. Breach data is provided by
 Needs Python 3.11+, PyGObject, GTK 4, Libadwaita 1.5+, libsecret and `python3-cryptography`.
 
 ```sh
-make run      # run from the source tree
+make start    # start the app locally from the source tree
 make test     # tests; the interface tests need a display
 make check    # byte-compile and validate the desktop metadata
 make deb      # build dist/gleaks_*_all.deb

@@ -18,13 +18,13 @@ MIMEDIR     := $(DATADIR)/mime/packages
 
 INSTALL     := install
 
-.PHONY: all help check test run install uninstall deb flatpak clean
+.PHONY: all help check test start run install uninstall deb flatpak clean
 
 all: help
 
 help:
 	@echo "GLeaks targets:"
-	@echo "  make run        Run from the source tree"
+	@echo "  make start      Start the app locally from the source tree"
 	@echo "  make test       Run the test suite"
 	@echo "  make check      Byte-compile the sources and validate the desktop metadata"
 	@echo "  make install    Install into $(PREFIX)"
@@ -41,8 +41,11 @@ check:
 test:
 	$(PYTHON) -m pytest -q
 
-run:
-	$(PYTHON) -m gleaks
+# data/ on XDG_DATA_DIRS lets GTK find the app icon without installing it.
+start:
+	XDG_DATA_DIRS="$(CURDIR)/data:$${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" $(PYTHON) -m gleaks
+
+run: start
 
 install:
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)
