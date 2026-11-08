@@ -19,7 +19,7 @@ from gleaks import secret_store  # noqa: E402
 from gleaks.core import crypto  # noqa: E402
 from gleaks.core.models import ActionStatus, ErrorCode, NormalizedEvent  # noqa: E402
 from gleaks.core.profile import Profile  # noqa: E402
-from gleaks.providers.base import ExposureProvider, ProviderError, ProviderInfo, ProviderMode  # noqa: E402
+from gleaks.providers.base import ExposureProvider, ProviderError, ProviderInfo, ProviderMode, StepwiseProvider  # noqa: E402
 from gleaks.ui import window as window_module  # noqa: E402
 from gleaks.ui.window import MainWindow  # noqa: E402
 
@@ -65,6 +65,26 @@ class Keyless(Fake):
     def check(self, value, ctx):
         self.seen.append((value, ctx.api_key))
         ctx.log("Sending query")
+        return []
+
+
+class Slow(StepwiseProvider):
+    info = ProviderInfo("slow", "Slow Tool", "1", "MIT", "https://x", "slow.example", ("email",),
+                        (ProviderMode("exact", "Exact", "The query", "No key"),), False, "",
+                        "Free", "None", "Pages", "Found by Slow", category="gleaks")
+
+    def __init__(self):
+        self.steps_run = []
+
+    def check(self, value, ctx):
+        raise AssertionError("slow tools must go through the queue")
+
+    def plan(self, value):
+        return ["one", "two", "three"]
+
+    def run_step(self, value, step, ctx):
+        self.steps_run.append(step)
+        ctx.log(f"did {step}")
         return []
 
 
@@ -227,6 +247,85 @@ def test_with_no_runnable_source_preferences_open(harness, monkeypatch):
     assert harness.fake.seen == []
     harness.get_visible_dialog().force_close()
     pump(lambda: harness.get_visible_dialog() is None)
+
+
+@pytest.fixture
+def slow(app, tmp_path, monkeypatch):
+    """A window with one slow tool only, and no pause between steps."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(secret_store, "get_api_key", lambda _p: None)
+    tool = Slow()
+    monkeypatch.setattr(window_module, "PROVIDERS", {"slow": tool})
+    win = MainWindow(application=app)
+    win.tool = tool
+    win.present()
+    profile = Profile.create(tmp_path / "s.gleaks", "password1", "S", params=FAST)
+    profile.set_pace(0)
+    profile.add_email("me@example.com")
+    win._show_profile(profile)
+    yield win
+    win._release_profile()
+    win.destroy()
+    pump(timeout=0.05)
+
+
+def start_slow(win):
+    win.start_scan()
+    answer(win, "scan")
+
+
+def test_slow_tools_run_step_by_step_and_finish(slow):
+    start_slow(slow)
+    assert slow.profile.jobs()[0].total == 3
+    assert pump(lambda: slow.profile.jobs() == [], timeout=6)
+    assert slow.tool.steps_run == ["one", "two", "three"]
+    assert slow.profile.last_checks()[0].status == "completed"
+    assert any("did two" in e.message for e in slow.profile.log_entries("slow"))
+
+
+def test_paused_job_stops_and_resumes(slow):
+    slow.profile.set_pace(3600)
+    start_slow(slow)
+    job = slow.profile.jobs()[0]
+    slow._job_command("pause", job.id)
+    assert pump(lambda: slow.profile.jobs()[0].status == "paused")
+    pump(timeout=1.2)  # Lets a step already under way finish.
+    done_before = len(slow.tool.steps_run)
+    slow.profile.set_pace(0)
+    pump(timeout=2.2)
+    assert len(slow.tool.steps_run) == done_before
+    slow._job_command("resume", job.id)
+    assert pump(lambda: slow.profile.jobs() == [], timeout=6)
+
+
+def test_background_job_hides_the_window_and_keeps_running(slow):
+    slow.profile.set_pace(3600)
+    identifier = slow.profile.identifiers()[0]
+    job = slow.profile.create_job("slow", "exact", identifier.id, ["one", "two"])
+    slow._set_job_background(job, True)
+    assert pump(lambda: slow.profile.jobs()[0].background)
+    slow.close()
+    assert pump(lambda: not slow.get_visible())
+    assert slow.profile is not None
+    slow.present()
+    assert slow.get_visible()
+    assert slow._in_background is False
+
+
+def test_closing_without_background_jobs_keeps_them_for_next_time(slow):
+    slow.profile.set_pace(3600)
+    start_slow(slow)
+    path = slow.profile.path
+    slow.close_profile()
+    reopened = Profile.open(path, "password1")
+    assert [job.status for job in reopened.jobs()] == ["running"]
+    reopened.close()
+
+
+def test_repeat_queues_a_search_when_due(slow, monkeypatch):
+    slow.profile.set_repeat_days(1, now="2020-01-01T00:00:00Z")
+    assert pump(lambda: slow.tool.steps_run or slow.profile.jobs(), timeout=4)
+    assert not slow.profile.repeat_due()
 
 
 def test_close_profile_returns_to_welcome_and_persists(harness):

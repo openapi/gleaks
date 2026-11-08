@@ -30,12 +30,12 @@ from ..core.models import (
 from ..i18n import _
 from .base import (
     CheckContext,
-    ExposureProvider,
     HttpResponse,
     ProviderError,
     ProviderInfo,
     ProviderMode,
     ScanCancelled,
+    StepwiseProvider,
 )
 
 SEARCH_URL = "https://html.duckduckgo.com/html/?q="
@@ -116,7 +116,7 @@ def _mentions(value: str) -> re.Pattern:
     return re.compile(rf"(?<![\w.+-]){re.escape(value)}(?![\w-]|\.\w)", re.IGNORECASE)
 
 
-class WebSearchProvider(ExposureProvider):
+class WebSearchProvider(StepwiseProvider):
     info = ProviderInfo(
         id="web",
         name=_("Web search"),
@@ -131,14 +131,32 @@ class WebSearchProvider(ExposureProvider):
         requires_api_key=False,
         api_key_url="",
         costs=_("Free, no key needed. Finds public pages, not breaches."),
-        rate_limits=_("One query per identifier and engine. If DuckDuckGo asks for a "
-                      "human check, GLeaks stops using it."),
+        rate_limits=_("One request at a time, spread out over time. If an engine asks "
+                      "for a human check, GLeaks waits hours before trying again."),
         returns=_("Public pages that mention the exact identifier."),
         attribution=_("Found with Marginalia Search or DuckDuckGo."),
         capabilities=("web-mentions",),
         min_request_interval=20.0,
         category="gleaks",
     )
+
+    def plan(self, value: str) -> list[str]:
+        try:
+            detect_identifier(value)
+        except ValueError as exc:
+            raise ProviderError(ErrorCode.UNSUPPORTED_IDENTIFIER) from exc
+        return ["marginalia", "duckduckgo"]
+
+    def run_step(self, value: str, step: str, ctx: CheckContext) -> Sequence[NormalizedEvent]:
+        _kind, canonical = detect_identifier(value)
+        if ctx.cancel.is_set():
+            raise ScanCancelled
+        engine = {"marginalia": self._ask_marginalia, "duckduckgo": self._ask_duckduckgo}[step]
+        results = engine(canonical, ctx)
+        events = self._mentions_of(canonical, results)
+        ctx.log(_("{engine}: {total} results, {kept} mention the exact identifier").format(
+            engine=step, total=len(results), kept=len(events)))
+        return events
 
     def check(self, value: str, ctx: CheckContext) -> Sequence[NormalizedEvent]:
         try:

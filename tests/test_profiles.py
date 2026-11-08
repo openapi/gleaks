@@ -178,3 +178,21 @@ def test_only_gravatar_receives_an_email():
     run(ProfileIndexProvider(), http, value="me@example.com")
     assert len(http.requests) == 1
     assert "gravatar.com" in http.requests[0][0]
+
+
+# -- slow steps --------------------------------------------------------------
+def test_each_site_is_one_step():
+    prov = provider("a.test", "b.test")
+    assert prov.plan("francescobianco") == ["a.test", "b.test"]
+    http = Http({"a.test": response(200), "b.test": response(404)})
+    ctx = CheckContext(mode="exact", http=http)
+    assert len(prov.run_step("francescobianco", "a.test", ctx)) == 1
+    assert len(http.requests) == 1
+
+
+@pytest.mark.parametrize("status,code", [(429, "rate_limited"), (403, "unavailable")])
+def test_an_unclear_step_raises_so_it_can_be_retried(status, code):
+    ctx = CheckContext(mode="exact", http=Http({"a.test": response(status)}))
+    with pytest.raises(ProviderError) as info:
+        provider("a.test").run_step("francescobianco", "a.test", ctx)
+    assert info.value.code == code

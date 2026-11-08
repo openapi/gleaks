@@ -16,6 +16,7 @@ import sqlite3
 from pathlib import Path
 
 from . import crypto
+from .jobs import JobsMixin
 from .migrations import APPLICATION_ID, SCHEMA_VERSION, migrate, schema_version
 from .models import (
     Action,
@@ -62,7 +63,7 @@ def _configure(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
 
 
-class Profile:
+class Profile(JobsMixin):
     def __init__(self, path: Path, conn: sqlite3.Connection, key: bytes, salt: bytes,
                  params: crypto.KdfParams):
         self.path = path

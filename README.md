@@ -48,6 +48,18 @@ Add the identifiers that are yours, such as an email address, a nickname or your
 
 Sources run side by side and never wait for each other. If one fails, the others carry on. Without a key, Have I Been Pwned is simply skipped.
 
+## Slow on purpose
+
+GLeaks' own tools never flood the web. They make one request at a time, 30 seconds apart by default, across all searches. A nickname takes around a quarter of an hour, and that is the point.
+
+- **Pause, resume, cancel** any search from the Activity tab.
+- **Picks up where it stopped.** Progress lives in your profile, so a search survives closing the app and continues the next time you open it.
+- **Background searches.** Mark a search to keep going after the window closes. GLeaks stays running until it finishes, with your profile unlocked in memory, and you can reopen it at any time.
+- **Automatic repeats.** Run the searches every day, week or month while GLeaks is open or in the background.
+- **Backs off when asked.** A site that rate-limits or asks for a human check is left alone for hours before one more try, and after three attempts that step is reported as failed.
+
+Have I Been Pwned is a paid API with its own limits, so it answers right away.
+
 ## Built to be trusted
 
 - **You approve every scan.** Before anything leaves your computer, GLeaks shows what will be sent and to whom.

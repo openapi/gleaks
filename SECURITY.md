@@ -17,6 +17,10 @@ Each save atomically replaces the file with new ciphertext.
 is stored only inside the encrypted profile, and can be cleared. Nothing about
 identifiers or responses goes to the application's own logs.
 
+**Background searches** keep the profile unlocked in the application's memory until
+they finish, with no window on screen. Nothing is written in clear, but the exposure
+to malware in your session described below lasts as long as they run.
+
 **API keys** are stored in the desktop keyring through libsecret, never in the
 profile, so they do not travel with the file. On another computer you enter the key again.
 

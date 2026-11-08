@@ -27,7 +27,7 @@ class GLeaksApp(Adw.Application):
             ("scan", lambda *_a: self._main().start_scan(), "<primary>r"),
             ("preferences", lambda *_a: self._main().show_preferences(), "<primary>comma"),
             ("about", self._on_about, None),
-            ("quit", lambda *_a: self._main().close(), "<primary>q"),
+            ("quit", lambda *_a: self._main().quit_now(), "<primary>q"),
         ):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", callback)

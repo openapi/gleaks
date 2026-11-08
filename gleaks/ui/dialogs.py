@@ -183,6 +183,8 @@ class PreferencesDialog(Adw.PreferencesDialog):
             members = [p for p in providers if p.info.category == category]
             if members:
                 page = Adw.PreferencesPage(title=title, icon_name=icon)
+                if category == "gleaks":
+                    page.add(self._slow_search_group())
                 for provider in members:
                     page.add(self._provider_group(provider))
                 self.add(page)
@@ -193,6 +195,43 @@ class PreferencesDialog(Adw.PreferencesDialog):
             operation()
         except OSError:
             self._notify(_("The profile could not be saved."))
+
+    # -- slow searches -------------------------------------------------------
+    def _slow_search_group(self) -> Adw.PreferencesGroup:
+        group = Adw.PreferencesGroup(
+            title=_("Slow searches"),
+            description=_("GLeaks tools make one request at a time, spread out over time, so "
+                          "that no site gets flooded. A search can take a while, and it "
+                          "resumes where it stopped."))
+        paces = [(30, _("Gentle: one request every 30 seconds")),
+                 (120, _("Slow: one request every 2 minutes")),
+                 (600, _("Very slow: one request every 10 minutes"))]
+        repeats = [(0, _("Off")), (1, _("Every day")), (7, _("Every week")), (30, _("Every month"))]
+        pace_row = self._choice_row(_("Pace"), paces, self._profile.pace(), self._profile.set_pace)
+        repeat_row = self._choice_row(_("Repeat automatically"), repeats,
+                                      self._profile.repeat_days(), self._profile.set_repeat_days)
+        repeat_row.set_subtitle(_("While on, GLeaks searches your enabled identifiers with its "
+                                  "own tools without asking each time. It runs only while "
+                                  "GLeaks is open or in the background."))
+        background = Adw.SwitchRow(title=_("Keep new searches going after the window closes"),
+                                   active=self._profile.background_by_default())
+        background.connect("notify::active", lambda row, _p: self._guard_save(
+            lambda: self._profile.set_background_by_default(row.get_active())))
+        for row in (pace_row, repeat_row, background):
+            group.add(row)
+        return group
+
+    def _choice_row(self, title, choices, current, apply) -> Adw.ComboRow:
+        values = [value for value, _label in choices]
+        row = Adw.ComboRow(title=title, model=Gtk.StringList.new([label for _v, label in choices]))
+        if current in values:
+            row.set_selected(values.index(current))
+
+        def changed(combo, _pspec):
+            self._guard_save(lambda: apply(values[combo.get_selected()]))
+
+        row.connect("notify::selected", changed)
+        return row
 
     # -- sources -------------------------------------------------------------
     def _provider_group(self, provider: ExposureProvider) -> Adw.PreferencesGroup:

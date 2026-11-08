@@ -49,6 +49,7 @@ class EventKind(StrEnum):
 
 
 class ScanStatus(StrEnum):
+    RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"

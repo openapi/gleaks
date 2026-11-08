@@ -10,6 +10,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk, Pango  # noqa: E402
 
+from ..core.jobs import Job, JobStatus  # noqa: E402
 from ..core.models import (  # noqa: E402
     ActionStatus,
     EventKind,
@@ -302,8 +303,12 @@ class _Track:
 class ActivityPage(Gtk.Box):
     """Shows, source by source, what each search did and what it sent."""
 
-    def __init__(self, providers: list[ExposureProvider], on_clear: Callable[[], None]):
+    def __init__(self, providers: list[ExposureProvider], on_clear: Callable[[], None],
+                 on_job: Callable[[str, int], None], on_background: Callable[[int, bool], None],
+                 on_pause_all: Callable[[], None]):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
+        self._on_job, self._on_background = on_job, on_background
+        self._names = {p.info.id: p.info.name for p in providers}
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         self.append(clamped(body))
         intro = Gtk.Box(spacing=12)
@@ -313,9 +318,15 @@ class ActivityPage(Gtk.Box):
         note.add_css_class("caption")
         clear = Gtk.Button(label=_("Clear Log"), valign=Gtk.Align.CENTER)
         clear.connect("clicked", lambda *_a: on_clear())
+        self.pause_all = Gtk.Button(label=_("Pause All"), valign=Gtk.Align.CENTER, visible=False)
+        self.pause_all.connect("clicked", lambda *_a: on_pause_all())
         intro.append(note)
+        intro.append(self.pause_all)
         intro.append(clear)
         body.append(intro)
+        self.jobs_list = boxed_list()
+        self.jobs_list.set_visible(False)
+        body.append(self.jobs_list)
         self.tracks = {provider.info.id: _Track(body, provider) for provider in providers}
 
     def refresh(self, profile: Profile) -> None:
@@ -326,6 +337,51 @@ class ActivityPage(Gtk.Box):
                 track.prepend(entry)
             track.lines.set_visible(bool(entries))
             track.set_status(_("Not started"), False)
+
+    def refresh_jobs(self, jobs: list[Job], pace: int) -> None:
+        self.jobs_list.remove_all()
+        self.jobs_list.set_visible(bool(jobs))
+        self.pause_all.set_visible(bool(jobs))
+        running = [job for job in jobs if job.status == JobStatus.RUNNING]
+        self.pause_all.set_label(_("Pause All") if running else _("Resume All"))
+        for job in jobs:
+            self.jobs_list.append(self._job_row(job, pace))
+        for provider_id, track in self.tracks.items():
+            mine = [job for job in jobs if job.provider_id == provider_id]
+            if mine:
+                active = any(job.status == JobStatus.RUNNING for job in mine)
+                track.set_status(_("Working slowly…") if active else _("Paused"), active)
+
+    def _job_row(self, job: Job, pace: int) -> Adw.ActionRow:
+        paused = job.status == JobStatus.PAUSED
+        minutes = max(1, round((job.total - job.finished) * pace / 60))
+        details = [_("{done} of {total} done").format(done=job.finished, total=job.total)]
+        details.append(_("Paused") if paused else _("about {minutes} min left").format(minutes=minutes))
+        if job.next_retry_at:
+            details.append(_("retrying at {time}").format(time=format_time(job.next_retry_at)))
+        row = action_row(f"{self._names.get(job.provider_id, job.provider_id)} · "
+                         f"{job.identifier_value}", " · ".join(details))
+        bar = Gtk.ProgressBar(fraction=job.finished / job.total, valign=Gtk.Align.CENTER,
+                              width_request=70)
+        row.add_suffix(bar)
+        background = Gtk.ToggleButton(icon_name="go-down-symbolic", active=job.background,
+                                      valign=Gtk.Align.CENTER,
+                                      tooltip_text=_("Keep going after the window closes"))
+        background.update_property([Gtk.AccessibleProperty.LABEL],
+                                   [_("Keep going after the window closes")])
+        background.connect("toggled", lambda b, j=job.id: self._on_background(j, b.get_active()))
+        row.add_suffix(background)
+        for icon, tip, command in (
+            ("media-playback-start-symbolic", _("Resume"), "resume") if paused
+            else ("media-playback-pause-symbolic", _("Pause"), "pause"),
+            ("process-stop-symbolic", _("Cancel"), "cancel"),
+        ):
+            button = Gtk.Button(icon_name=icon, valign=Gtk.Align.CENTER, tooltip_text=tip)
+            button.add_css_class("flat")
+            button.update_property([Gtk.AccessibleProperty.LABEL], [tip])
+            button.connect("clicked", lambda _b, c=command, j=job.id: self._on_job(c, j))
+            row.add_suffix(button)
+        return row
 
     def add_entry(self, entry: LogEntry) -> None:
         track = self.tracks.get(entry.provider_id)

@@ -91,6 +91,8 @@ def describe_check(status: str | None, error_code: str | None, found: int,
     if status == "failed":
         return _("Check failed on {date}: {reason}").format(
             date=when, reason=describe_error(error_code or ""))
+    if status == "running":
+        return _("Search in progress, see Activity")
     if status == "cancelled":
         return _("Check cancelled on {date}").format(date=when)
     if found:

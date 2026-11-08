@@ -151,6 +151,15 @@ def test_invalid_identifier():
     assert info.value.code == ErrorCode.UNSUPPORTED_IDENTIFIER
 
 
+def test_each_engine_is_a_separate_step():
+    provider = WebSearchProvider()
+    assert provider.plan(EMAIL) == ["marginalia", "duckduckgo"]
+    http = Http(200, page(result("https://a.test/", "T", EMAIL)))
+    ctx = CheckContext(mode="exact", http=http)
+    assert len(provider.run_step(EMAIL, "duckduckgo", ctx)) == 1
+    assert http.marginalia_requests == []
+
+
 def test_nicknames_and_phrases_are_searched_exactly():
     http = Http(200, page(result("https://a.test/", "T", "by Mario Rossi here")))
     ctx = CheckContext(mode="exact", http=http)

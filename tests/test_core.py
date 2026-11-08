@@ -6,6 +6,7 @@ import threading
 import pytest
 
 from gleaks.core import crypto
+from gleaks.core.jobs import shift
 from gleaks.core.migrations import SCHEMA_VERSION, NewerSchemaError
 from gleaks.core.models import (
     ActionStatus,
@@ -176,7 +177,8 @@ def test_a_version_1_profile_is_migrated(path, profile):
 
     def downgrade(conn):
         conn.executescript(
-            "DROP TABLE search_log; ALTER TABLE breaches DROP COLUMN kind; PRAGMA user_version = 1;")
+            "DROP TABLE job_steps; DROP TABLE jobs; DROP TABLE search_log;"
+            " ALTER TABLE breaches DROP COLUMN kind; PRAGMA user_version = 1;")
 
     _rewrite(path, PASSWORD, downgrade)
     migrated = Profile.open(path, PASSWORD)
@@ -246,6 +248,186 @@ def test_source_preferences_default_on(profile):
     assert not profile.provider_enabled("web")
     profile.set_provider_mode("web", "exact")
     assert not profile.provider_enabled("web")
+
+
+# -- slow searches -----------------------------------------------------------
+T0 = "2026-11-08T10:00:00Z"
+
+
+def job_for(profile, steps=("a", "b"), value="a@example.com", provider="tool", **kwargs):
+    identifier = profile.add_email(value)
+    job = profile.create_job(provider, "exact", identifier.id, list(steps), now=T0, **kwargs)
+    return identifier, job
+
+
+def later(seconds):
+    return shift(T0, seconds)
+
+
+def test_pace_spaces_out_requests_across_jobs(profile):
+    job_for(profile)
+    job_for(profile, value="b@example.com", provider="other")
+    first = profile.next_ticket(now=later(0))
+    profile.complete_step(first, (), now=later(0))
+    assert profile.next_ticket(now=later(profile.pace() - 1)) is None
+    second = profile.next_ticket(now=later(profile.pace()))
+    assert second is not None and second.job_id != first.job_id  # Jobs take turns.
+
+
+def test_pace_survives_reopening(path):
+    created = Profile.create(path, PASSWORD, "Me", params=FAST)
+    job_for(created)
+    created.complete_step(created.next_ticket(now=T0), (), now=T0)
+    created.close()
+    reopened = Profile.open(path, PASSWORD)
+    assert reopened.next_ticket(now=later(5)) is None
+    reopened.close()
+
+
+def test_job_resumes_where_it_stopped_after_reopening(path):
+    created = Profile.create(path, PASSWORD, "Me", params=FAST)
+    job_for(created, steps=("a", "b", "c"))
+    created.complete_step(created.next_ticket(now=T0), (), now=T0)
+    created.close()
+    reopened = Profile.open(path, PASSWORD)
+    job = reopened.jobs()[0]
+    assert (job.finished, job.total) == (1, 3)
+    assert reopened.next_ticket(now=later(100)).step == "b"
+    reopened.close()
+
+
+def test_an_interrupted_step_is_simply_run_again(profile):
+    job_for(profile)
+    ticket = profile.next_ticket(now=T0)
+    assert profile.next_ticket(now=T0).step_id == ticket.step_id  # Nothing recorded yet.
+
+
+def test_paused_jobs_get_no_steps_until_resumed(profile):
+    _identifier, job = job_for(profile)
+    profile.pause_job(job)
+    assert profile.next_ticket(now=T0) is None
+    profile.resume_job(job)
+    assert profile.next_ticket(now=T0) is not None
+
+
+def test_pause_all_and_resume_all(profile):
+    job_for(profile)
+    job_for(profile, value="b@example.com")
+    profile.set_all_paused(True)
+    assert {job.status for job in profile.jobs()} == {"paused"}
+    profile.set_all_paused(False)
+    assert {job.status for job in profile.jobs()} == {"running"}
+
+
+def test_finding_is_stored_as_evidence_and_job_completes(profile):
+    _identifier, _job = job_for(profile, steps=("a",))
+    mention = NormalizedEvent(source="tool", source_event_id="x", title="Page",
+                              kind=EventKind.PROFILE_PAGE)
+    assert profile.complete_step(profile.next_ticket(now=T0), (mention,), now=T0) == 1
+    assert profile.jobs() == []
+    check = profile.last_checks()[0]
+    assert (check.status, check.found) == (ScanStatus.COMPLETED, 1)
+    assert profile.exposures()[0].title == "Page"
+
+
+def test_a_running_job_shows_as_in_progress(profile):
+    job_for(profile)
+    assert profile.last_checks()[0].status == ScanStatus.RUNNING
+
+
+@pytest.mark.parametrize("code,first_wait", [(ErrorCode.BLOCKED, 3600), (ErrorCode.RATE_LIMITED, 3600),
+                                             (ErrorCode.NETWORK, 900)])
+def test_failures_back_off_before_retrying(profile, code, first_wait):
+    job_for(profile, steps=("a",))
+    retry_at = profile.fail_step(profile.next_ticket(now=T0), code, now=T0)
+    assert retry_at == later(first_wait)
+    profile.set_pace(0)
+    assert profile.next_ticket(now=later(first_wait - 1)) is None
+    assert profile.next_ticket(now=later(first_wait)).attempts == 1
+
+
+def test_a_step_that_keeps_failing_is_given_up_and_never_reads_as_clean(profile):
+    job_for(profile, steps=("a",))
+    profile.set_pace(0)
+    moment = T0
+    for _attempt in range(3):
+        ticket = profile.next_ticket(now=moment)
+        retry_at = profile.fail_step(ticket, ErrorCode.BLOCKED, now=moment)
+        moment = retry_at or moment
+    assert retry_at is None
+    assert profile.jobs() == []
+    check = profile.last_checks()[0]
+    assert check.status == ScanStatus.FAILED and check.error_code == ErrorCode.BLOCKED
+
+
+def test_a_partly_failed_job_still_completes(profile):
+    job_for(profile, steps=("good", "bad"))
+    profile.set_pace(0)
+    profile.complete_step(profile.next_ticket(now=T0), (), now=T0)
+    moment = T0
+    for _attempt in range(3):
+        retry_at = profile.fail_step(profile.next_ticket(now=moment), ErrorCode.NETWORK, now=moment)
+        moment = retry_at or moment
+    assert profile.last_checks()[0].status == ScanStatus.COMPLETED
+    done = profile.jobs(active_only=False)[0]
+    assert (done.failed, done.finished, done.total) == (1, 2, 2)
+
+
+def test_cancel_discards_a_result_still_in_flight(profile):
+    _identifier, job = job_for(profile)
+    ticket = profile.next_ticket(now=T0)
+    profile.cancel_job(job, now=T0)
+    event_ = NormalizedEvent(source="tool", source_event_id="x", title="Late")
+    assert profile.complete_step(ticket, (event_,), now=T0) == 0
+    assert profile.exposures() == []
+    assert profile.last_checks()[0].status == ScanStatus.CANCELLED
+
+
+def test_removing_an_identifier_removes_its_jobs(profile):
+    identifier, _job = job_for(profile)
+    ticket = profile.next_ticket(now=T0)
+    profile.remove_identifier(identifier.id)
+    assert profile.jobs() == [] and profile.next_ticket(now=T0) is None
+    assert profile.complete_step(ticket, (), now=T0) == 0
+
+
+def test_the_same_search_is_not_queued_twice(profile):
+    identifier, first = job_for(profile)
+    assert profile.create_job("tool", "exact", identifier.id, ["a"], now=T0) is None
+    profile.cancel_job(first, now=T0)
+    assert profile.create_job("tool", "exact", identifier.id, ["a"], now=T0) is not None
+
+
+def test_background_only_selects_flagged_jobs(profile):
+    job_for(profile)
+    assert profile.next_ticket(background_only=True, now=T0) is None
+    assert not profile.has_active_background_jobs()
+    _other, job = job_for(profile, value="b@example.com", background=True)
+    assert profile.next_ticket(background_only=True, now=T0).job_id == job
+    assert profile.has_active_background_jobs()
+    profile.pause_job(job)
+    assert not profile.has_active_background_jobs()
+
+
+def test_repeat_schedule(profile):
+    assert not profile.repeat_due(now=T0)
+    profile.set_repeat_days(7, now=T0)
+    assert not profile.repeat_due(now=later(6 * 86400))
+    assert profile.repeat_due(now=later(7 * 86400))
+    profile.mark_repeat_started(now=later(7 * 86400))
+    assert not profile.repeat_due(now=later(8 * 86400))
+    profile.set_repeat_days(0, now=T0)
+    assert not profile.repeat_due(now=later(99 * 86400))
+
+
+def test_settings_survive_reopening(path):
+    created = Profile.create(path, PASSWORD, "Me", params=FAST)
+    created.set_pace(120)
+    created.set_background_by_default(True)
+    created.close()
+    reopened = Profile.open(path, PASSWORD)
+    assert reopened.pace() == 120 and reopened.background_by_default()
+    reopened.close()
 
 
 # -- identifiers -------------------------------------------------------------

@@ -20,9 +20,11 @@ from ..core.profile import DamagedProfileError, Profile  # noqa: E402
 from ..core.scanning import ScanOutcome, ScanRequest, run_scan  # noqa: E402
 from ..i18n import _, ngettext  # noqa: E402
 from ..providers import PROVIDERS  # noqa: E402
-from ..providers.base import CheckContext, ExposureProvider  # noqa: E402
+from ..providers.base import CheckContext, ExposureProvider, ProviderError, StepwiseProvider  # noqa: E402
+from .background import request_background  # noqa: E402
 from .common import action_row, boxed_list, clamped, run_async  # noqa: E402
 from .dialogs import CreateProfileDialog, ExposureDialog, PreferencesDialog, UnlockDialog  # noqa: E402
+from .scheduler import JobScheduler  # noqa: E402
 from .pages import ActionsPage, ActivityPage, DashboardPage, ExposuresPage, IdentifiersPage  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -47,6 +49,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_size_request(360, 400)
         self.profile: Profile | None = None
         self._scan: _ScanRun | None = None
+        self._scheduler: JobScheduler | None = None
+        self._in_background = False
         self.providers = list(PROVIDERS.values())
         self.toasts = Adw.ToastOverlay()
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
@@ -104,7 +108,8 @@ class MainWindow(Adw.ApplicationWindow):
                                            self._confirm_remove)
         self.exposures = ExposuresPage(self._open_exposure)
         self.actions_page = ActionsPage(self._set_action_status)
-        self.activity = ActivityPage(self.providers, self._clear_log)
+        self.activity = ActivityPage(self.providers, self._clear_log, self._job_command,
+                                     self._set_job_background, self._toggle_pause_all)
         for page, name, title, icon in (
             (self.dashboard, "dashboard", _("Overview"), "view-grid-symbolic"),
             (self.identifiers, "identifiers", _("Identifiers"), "mail-unread-symbolic"),
@@ -256,12 +261,20 @@ class MainWindow(Adw.ApplicationWindow):
         self.views.set_visible_child_name("dashboard")
         self._refresh_pages()
         self.activity.refresh(profile)
+        self._refresh_jobs()
+        self._scheduler = JobScheduler(
+            profile, {p.info.id: p for p in self.providers if isinstance(p, StepwiseProvider)},
+            self._add_log, self._on_job_progress, lambda: self._in_background, self._on_tick)
         self.stack.set_visible_child_name("profile")
 
     def _release_profile(self) -> bool:
         """Stop any scan and close the current profile; False if it cannot be saved."""
         self.cancel_scan()
         self._scan = None
+        if self._scheduler is not None:
+            self._scheduler.stop()
+            self._scheduler = None
+        self._in_background = False
         self.banner.set_revealed(False)
         self.scan_button.set_sensitive(True)
         if self.profile is None:
@@ -281,7 +294,31 @@ class MainWindow(Adw.ApplicationWindow):
             self.stack.set_visible_child_name("welcome")
 
     def _on_close_request(self, _window):
+        if self.profile is not None and self.profile.has_active_background_jobs():
+            self._go_to_background()
+            return True
         return not self._release_profile()
+
+    def quit_now(self) -> None:
+        """Quit even with background searches; they resume at the next start."""
+        if self._release_profile():
+            self.destroy()
+
+    def _go_to_background(self) -> None:
+        """Hide the window; the unlocked profile and its searches stay alive."""
+        self._in_background = True
+        self.set_visible(False)
+        request_background(_("Finishing your searches"))
+        self._notify(_("GLeaks keeps searching in the background. Open it to pause or stop."))
+
+    def present(self) -> None:
+        self._in_background = False
+        Adw.ApplicationWindow.present(self)
+
+    def _notify(self, body: str) -> None:
+        notification = Gio.Notification.new(APP_NAME)
+        notification.set_body(body)
+        self.get_application().send_notification("gleaks-status", notification)
 
     # -- refresh and edits ---------------------------------------------------
     def _refresh_pages(self) -> None:
@@ -420,20 +457,122 @@ class MainWindow(Adw.ApplicationWindow):
 
         def responded(_dialog, response):
             if response == "scan" and self.profile is not None:
-                self._run_scan(plan, skipped)
+                self._start_sources(plan, skipped)
 
         dialog.connect("response", responded)
         dialog.present(self)
 
-    def _run_scan(self, plan: list, skipped: list) -> None:
+    def _start_sources(self, plan: list, skipped: list) -> None:
+        self.views.set_visible_child_name("activity")
+        for provider in skipped:
+            self.activity.set_status(provider.info.id, _("Skipped, no API key"), False)
+        immediate = [item for item in plan if not isinstance(item[0], StepwiseProvider)]
+        slow = [(p, r) for p, _k, r in plan if isinstance(p, StepwiseProvider)]
+        if slow:
+            self._queue_jobs(slow)
+        if immediate:
+            self._run_scan(immediate)
+
+    def _queue_jobs(self, sources: list, scheduled: bool = False) -> int:
+        queued = 0
+        background = self.profile.background_by_default()
+        for provider, requests in sources:
+            info = provider.info
+            mode = self._mode_for(provider).id
+            for request in requests:
+                try:
+                    steps = provider.plan(request.value)
+                except ProviderError:
+                    self._add_log(info.id, "warning", _("{value}: this source cannot check it.")
+                                  .format(value=request.value))
+                    continue
+                try:
+                    job = self.profile.create_job(info.id, mode, request.identifier_id, steps,
+                                                  background)
+                except OSError:
+                    self.show_toast(_SAVE_FAILED)
+                    return queued
+                if job is None:
+                    self._add_log(info.id, "info", _("{value}: already being searched.")
+                                  .format(value=request.value))
+                else:
+                    queued += 1
+                    self._add_log(info.id, "info", _("{value}: queued, {count} steps.").format(
+                        value=request.value, count=len(steps)))
+        self._refresh_jobs()
+        self._refresh_pages()
+        if queued and not scheduled:
+            self.show_toast(_("Searches started. They run slowly: follow them here."))
+        return queued
+
+    def _on_tick(self) -> None:
+        if self.profile is not None and self.profile.repeat_due():
+            self._start_repeat()
+
+    def _start_repeat(self) -> None:
+        requests = [ScanRequest(item.id, item.value, item.type)
+                    for item in self.profile.identifiers(enabled_only=True)]
+        sources = [(p, self._requests_for(p, requests)) for p in self.providers
+                   if isinstance(p, StepwiseProvider) and self.profile.provider_enabled(p.info.id)]
+        try:
+            self.profile.mark_repeat_started()
+        except OSError:
+            self.show_toast(_SAVE_FAILED)
+        self._queue_jobs([(p, r) for p, r in sources if r], scheduled=True)
+
+    def _add_log(self, provider_id: str, level: str, message: str) -> None:
+        if self.profile is not None:
+            self.activity.add_entry(self.profile.add_log(provider_id, level, message))
+
+    def _refresh_jobs(self) -> None:
+        if self.profile is not None:
+            self.activity.refresh_jobs(self.profile.jobs(), self.profile.pace())
+
+    def _on_job_progress(self, new: int) -> None:
+        self._refresh_jobs()
+        self._refresh_pages()
+        if new:
+            self.show_toast(ngettext("A search found something new.",
+                                     "Searches found {count} new things.", new).format(count=new))
+        if self._in_background and not self.profile.has_active_background_jobs():
+            self._notify(_("Background searches finished."))
+            self.quit_now()
+
+    def _job_command(self, command: str, job_id: int) -> None:
+        action = {"pause": self.profile.pause_job, "resume": self.profile.resume_job,
+                  "cancel": self.profile.cancel_job}[command]
+        self._apply_job_change(lambda: action(job_id))
+
+    def _apply_job_change(self, change) -> None:
+        def apply():
+            if self.profile is not None:
+                try:
+                    change()
+                except OSError:
+                    self.show_toast(_SAVE_FAILED)
+                self._refresh_jobs()
+                self._refresh_pages()
+            return GLib.SOURCE_REMOVE
+
+        # The button that fired this is destroyed by the refresh: defer it.
+        GLib.idle_add(apply)
+
+    def _set_job_background(self, job_id: int, background: bool) -> None:
+        def change():
+            self.profile.set_job_background(job_id, background)
+
+        self._apply_job_change(change)
+
+    def _toggle_pause_all(self) -> None:
+        running = any(job.status == "running" for job in self.profile.jobs())
+        self._apply_job_change(lambda: self.profile.set_all_paused(running))
+
+    def _run_scan(self, plan: list) -> None:
         run = _ScanRun(sum(len(requests) for _p, _k, requests in plan), len(plan))
         self._scan = run
         self.scan_button.set_sensitive(False)
         self._update_banner(run)
         self.banner.set_revealed(True)
-        self.views.set_visible_child_name("activity")
-        for provider in skipped:
-            self.activity.set_status(provider.info.id, _("Skipped, no API key"), False)
         for provider, key, requests in plan:
             self.activity.set_status(provider.info.id, _("Running…"), True)
             # Each source has its own thread: one being slow or failing cannot hold up another.

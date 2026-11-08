@@ -29,12 +29,12 @@ from ..core.models import (
 from ..i18n import _, ngettext
 from .base import (
     CheckContext,
-    ExposureProvider,
     HttpResponse,
     ProviderError,
     ProviderInfo,
     ProviderMode,
     ScanCancelled,
+    StepwiseProvider,
 )
 
 USER_AGENT = f"GLeaks/{__version__} (+https://github.com/openapi/gleaks)"
@@ -110,7 +110,7 @@ def load_sites(path: Path | None = None) -> tuple[Site, ...]:
 SITES = load_sites()
 
 
-class ProfileIndexProvider(ExposureProvider):
+class ProfileIndexProvider(StepwiseProvider):
     info = ProviderInfo(
         id="index",
         name=_("Profile index"),
@@ -126,7 +126,7 @@ class ProfileIndexProvider(ExposureProvider):
         api_key_url="",
         costs=_("Free, no key needed. A GLeaks tool: it checks which sites have a page "
                 "with your name."),
-        rate_limits=_("One request per site, one site at a time."),
+        rate_limits=_("One site at a time, spread out over time. You can pause or resume."),
         returns=_("Which sites have a public page with this name. A page may belong "
                   "to someone else."),
         attribution=_("Found by the GLeaks profile index."),
@@ -138,6 +138,35 @@ class ProfileIndexProvider(ExposureProvider):
 
     def __init__(self, sites: Sequence[Site] | None = None):
         self.sites = tuple(SITES if sites is None else sites)
+
+    def _sites_for(self, value: str) -> tuple[str, list[Site]]:
+        try:
+            kind, name = detect_identifier(value)
+        except ValueError as exc:
+            raise ProviderError(ErrorCode.UNSUPPORTED_IDENTIFIER) from exc
+        return name, [site for site in self.sites if site.applies_to(kind, name)]
+
+    def plan(self, value: str) -> list[str]:
+        _name, sites = self._sites_for(value)
+        if not sites:
+            raise ProviderError(ErrorCode.UNSUPPORTED_IDENTIFIER)
+        return [site.id for site in sites]
+
+    def run_step(self, value: str, step: str, ctx: CheckContext) -> Sequence[NormalizedEvent]:
+        name, sites = self._sites_for(value)
+        site = next((item for item in sites if item.id == step), None)
+        if site is None:  # The index changed since this job was queued.
+            raise ProviderError(ErrorCode.UNSUPPORTED_IDENTIFIER)
+        verdict, detail = self._probe(site, name, ctx)
+        if verdict == Verdict.FOUND:
+            ctx.log(_("{host}: page found").format(host=site.host))
+            return [self._event(site, name)]
+        if verdict == Verdict.ABSENT:
+            ctx.log(_("{host}: no page").format(host=site.host))
+            return []
+        ctx.log(_("{host}: could not tell ({detail})").format(host=site.host, detail=detail),
+                "warning")
+        raise ProviderError(ErrorCode.RATE_LIMITED if "429" in detail else ErrorCode.UNAVAILABLE)
 
     def check(self, value: str, ctx: CheckContext) -> Sequence[NormalizedEvent]:
         try:

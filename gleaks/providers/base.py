@@ -121,3 +121,15 @@ class ExposureProvider(ABC):
         :class:`ScanCancelled` once ``ctx.cancel`` is set, so that an error can
         never be mistaken for an empty result.
         """
+
+
+class StepwiseProvider(ExposureProvider):
+    """A connector whose work splits into single requests, run slowly over time."""
+
+    @abstractmethod
+    def plan(self, value: str) -> list[str]:
+        """The steps needed for ``value``. Raises ProviderError if there are none."""
+
+    @abstractmethod
+    def run_step(self, value: str, step: str, ctx: CheckContext) -> Sequence[NormalizedEvent]:
+        """Make the single request of ``step``. Raises ProviderError if it gives no answer."""

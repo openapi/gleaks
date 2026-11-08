@@ -98,6 +98,35 @@ MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX idx_search_log_provider ON search_log(provider_id, id);
     """,
+    """
+    CREATE TABLE jobs (
+        id INTEGER PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        identifier_id INTEGER NOT NULL REFERENCES identifiers(id) ON DELETE CASCADE,
+        scan_id INTEGER NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        background INTEGER NOT NULL DEFAULT 0,
+        found INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        last_step_at TEXT,
+        completed_at TEXT
+    );
+    CREATE INDEX idx_jobs_status ON jobs(status);
+
+    CREATE TABLE job_steps (
+        id INTEGER PRIMARY KEY,
+        job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        step TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        not_before TEXT,
+        error_code TEXT,
+        completed_at TEXT,
+        UNIQUE (job_id, step)
+    );
+    CREATE INDEX idx_job_steps_pending ON job_steps(status, job_id);
+    """,
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)
