@@ -1,12 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- GLeaks app icon: a shield with a drop escaping through it. Drawn on the
+       128 px GNOME app icon grid: flat fills, darker bottom edge, GNOME palette. -->
   <defs>
-    <linearGradient id="s" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#62a0ea"/>
-      <stop offset="1" stop-color="#1c71d8"/>
+      <stop offset="1" stop-color="#3584e4"/>
     </linearGradient>
+    <linearGradient id="drop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#deddda"/>
+    </linearGradient>
+    <linearGradient id="spill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8e45c"/>
+      <stop offset="1" stop-color="#f5c211"/>
+    </linearGradient>
+    <clipPath id="right">
+      <rect x="64" y="0" width="64" height="128"/>
+    </clipPath>
   </defs>
-  <path d="M64 10 22 25v37c0 26 17 46 42 56 25-10 42-30 42-56V25z" fill="#1a5fb4"/>
-  <path d="M64 6 22 21v37c0 26 17 46 42 56 25-10 42-30 42-56V21z" fill="url(#s)"/>
-  <path d="M64 30c-3 6-22 26-22 42a22 22 0 0 0 44 0c0-16-19-36-22-42z" fill="#fff"/>
-  <path d="M52 73a12 12 0 0 0 12 12" fill="none" stroke="#1c71d8" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- shield: bottom edge, face, shaded half, top highlight -->
+  <path d="M64 12 C78 21 93 25 108 26 C111 26 112 28 112 30 V60 C112 87 92 106 66.500 118 C65 118.700 63 118.700 61.500 118 C36 106 16 87 16 60 V30 C16 28 17 26 20 26 C35 25 50 21 64 12 Z" fill="#1a5fb4"/>
+  <path d="M64 8 C78 17 93 21 108 22 C111 22 112 24 112 26 V56 C112 83 92 102 66.500 114 C65 114.700 63 114.700 61.500 114 C36 102 16 83 16 56 V26 C16 24 17 22 20 22 C35 21 50 17 64 8 Z" fill="url(#face)"/>
+  <path clip-path="url(#right)" d="M64 8 C78 17 93 21 108 22 C111 22 112 24 112 26 V56 C112 83 92 102 66.500 114 C65 114.700 63 114.700 61.500 114 Z" fill="#1c71d8" opacity=".45"/>
+  <path d="M64 11.500 C78 20.500 93 24.500 108 25.500" fill="none" stroke="#99c1f1" stroke-width="2" stroke-linecap="round" opacity=".8"/>
+  <path d="M64 11.500 C50 20.500 35 24.500 20 25.500" fill="none" stroke="#99c1f1" stroke-width="2" stroke-linecap="round" opacity=".8"/>
+
+  <!-- main drop: edge, face, shine -->
+  <path d="M64 31 C70 42 86 55 86 71 A22 22 0 0 1 42 71 C42 55 58 42 64 31 Z" fill="#1a5fb4" opacity=".55" transform="translate(0 3)"/>
+  <path d="M64 31 C70 42 86 55 86 71 A22 22 0 0 1 42 71 C42 55 58 42 64 31 Z" fill="url(#drop)"/>
+  <path d="M52 72 A12.500 12.500 0 0 0 63 84.500" fill="none" stroke="#62a0ea" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- the drop that got out -->
+  <path d="M98 87 C101 93 108 99 108 106 A10 10 0 0 1 88 106 C88 99 95 93 98 87 Z" fill="#c64600" opacity=".55" transform="translate(0 2.500)"/>
+  <path d="M98 87 C101 93 108 99 108 106 A10 10 0 0 1 88 106 C88 99 95 93 98 87 Z" fill="url(#spill)"/>
 </svg>

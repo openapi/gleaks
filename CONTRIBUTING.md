@@ -16,6 +16,11 @@ Rules that matter here:
 - Nothing is sent to a source without passing through the consent dialog.
 - Schema changes are new entries appended to `MIGRATIONS`; never edit a released one.
 
+Sites in the profile index are entries in `gleaks/providers/sites.json`. An entry
+needs a name that exists on the site (`example`), and `make check-sites` must show
+it finding that name and not finding a made-up one. Sites that need a login, or
+that answer the same way either way, stay out of the index.
+
 New connectors must fill in every field of `ProviderInfo`, since the consent dialog
 shows them to the user. Third-party plugins are not supported yet.
 
