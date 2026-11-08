@@ -11,7 +11,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk  # noqa: E402
 
 from ..core.crypto import MIN_PASSWORD_LENGTH  # noqa: E402
-from ..core.models import ActionStatus, Exposure, Verification, describe_action  # noqa: E402
+from ..core.models import ActionStatus, EventKind, Exposure, Verification, describe_action  # noqa: E402
 from ..core.profile import Profile  # noqa: E402
 from ..i18n import _  # noqa: E402
 from ..providers.base import ExposureProvider  # noqa: E402
@@ -117,8 +117,10 @@ class ExposureDialog(Adw.Dialog):
                  on_status: Callable[[int, ActionStatus], None]):
         super().__init__(title=exposure.title, content_width=560, content_height=640)
         page = Adw.PreferencesPage()
+        is_web = exposure.kind != EventKind.BREACH
         if exposure.description:
-            about = Adw.PreferencesGroup(title=_("What happened"))
+            about = Adw.PreferencesGroup(title=_("What the page says") if is_web
+                                         else _("What happened"))
             text = Gtk.Label(label=exposure.description, wrap=True, xalign=0)
             about.add(text)
             page.add(about)
@@ -126,11 +128,17 @@ class ExposureDialog(Adw.Dialog):
         facts = Adw.PreferencesGroup(title=_("Details"))
         rows = [
             (_("Service"), exposure.domain or exposure.title),
-            (_("Date of the event"), exposure.event_date or _("Unknown")),
-            (_("Data involved"), ", ".join(exposure.data_classes) or _("Not specified")),
+            *(() if is_web else (
+                (_("Date of the event"), exposure.event_date or _("Unknown")),
+                (_("Data involved"), ", ".join(exposure.data_classes) or _("Not specified")),
+            )),
             (_("Identifiers involved"), ", ".join(profile.identifiers_for_breach(exposure.breach_id))),
             (_("Source"), attribution),
-            (_("Reliability"), _VERIFICATION[exposure.verification]),
+            (_("Reliability"), {
+                EventKind.WEB_MENTION: _("A search result. GLeaks has not checked this page."),
+                EventKind.PROFILE_PAGE: _("A page with this name exists. It may belong to "
+                                          "someone else."),
+            }.get(exposure.kind, _VERIFICATION[exposure.verification])),
             (_("First found"), format_datetime(exposure.first_seen_at)),
             (_("Last confirmed"), format_datetime(exposure.last_seen_at)),
         ]
@@ -139,7 +147,8 @@ class ExposureDialog(Adw.Dialog):
             row.add_css_class("property")
             facts.add(row)
         if exposure.source_url:
-            link = action_row(_("Disclosure notice"), exposure.source_url, activatable=True)
+            link = action_row(_("Open page") if is_web else _("Disclosure notice"),
+                              exposure.source_url, activatable=True)
             link.add_suffix(Gtk.Image(icon_name="adw-external-link-symbolic"))
             link.connect("activated", self._open_link, exposure.source_url)
             facts.add(link)
@@ -147,8 +156,7 @@ class ExposureDialog(Adw.Dialog):
 
         steps = Adw.PreferencesGroup(
             title=_("Suggested actions"),
-            description=_("This event is a historical fact. It stays in your record "
-                          "even after you complete these steps."))
+            description=_("This stays in your record even after you complete these steps."))
         for action in exposure.actions:
             row = action_row(describe_action(action.type))
             add_status_selector(row, action, on_status)
@@ -164,49 +172,113 @@ class ExposureDialog(Adw.Dialog):
 
 
 class PreferencesDialog(Adw.PreferencesDialog):
-    def __init__(self, profile: Profile, provider: ExposureProvider,
+    def __init__(self, profile: Profile, providers: list[ExposureProvider],
                  notify: Callable[[str], None]):
         super().__init__(title=_("Preferences"))
-        self._profile, self._provider, self._notify = profile, provider, notify
+        self._profile, self._notify = profile, notify
+        for category, title, icon in (
+            ("gleaks", _("GLeaks Tools"), "system-search-symbolic"),
+            ("third-party", _("Third-Party Services"), "network-server-symbolic"),
+        ):
+            members = [p for p in providers if p.info.category == category]
+            if members:
+                page = Adw.PreferencesPage(title=title, icon_name=icon)
+                for provider in members:
+                    page.add(self._provider_group(provider))
+                self.add(page)
+        self.add(self._security_page())
+
+    def _guard_save(self, operation):
+        try:
+            operation()
+        except OSError:
+            self._notify(_("The profile could not be saved."))
+
+    # -- sources -------------------------------------------------------------
+    def _provider_group(self, provider: ExposureProvider) -> Adw.PreferencesGroup:
         info = provider.info
-        page = Adw.PreferencesPage(title=_("Sources"), icon_name="network-server-symbolic")
-
-        source = Adw.PreferencesGroup(title=info.name, description=info.costs)
-        self._key_row = Adw.PasswordEntryRow(title=_("API key"), show_apply_button=True)
-        self._key_row.connect("apply", self._on_key_apply)
-        source.add(self._key_row)
-        self._key_status = action_row(_("Stored key"), _("Checking the keyring…"))
-        self._remove_key = Gtk.Button(label=_("Remove"), valign=Gtk.Align.CENTER, sensitive=False)
-        self._remove_key.connect("clicked", self._on_key_remove)
-        self._key_status.add_suffix(self._remove_key)
-        source.add(self._key_status)
-        get_key = action_row(_("Get an API key"), info.api_key_url, activatable=True)
-        get_key.add_suffix(Gtk.Image(icon_name="adw-external-link-symbolic"))
-        get_key.connect("activated", self._open_url, info.api_key_url)
-        source.add(get_key)
-
-        self._modes = list(info.modes)
-        self._mode_row = Adw.ComboRow(
-            title=_("Search method"),
-            model=Gtk.StringList.new([mode.label for mode in self._modes]))
-        current = info.mode(profile.provider_mode(info.id, info.modes[0].id))
-        self._mode_row.set_selected(self._modes.index(current))
-        self._mode_row.connect("notify::selected", self._on_mode_changed)
-        source.add(self._mode_row)
-        page.add(source)
-
-        disclosure = Adw.PreferencesGroup(title=_("What this source receives"))
-        self._sent_row = action_row(_("Sent"), "")
-        disclosure.add(self._sent_row)
-        self._plan_row = action_row(_("Requires"), "")
-        disclosure.add(self._plan_row)
+        group = Adw.PreferencesGroup(title=info.name, description=info.costs)
+        enabled = Adw.SwitchRow(title=_("Use this source"),
+                                active=self._profile.provider_enabled(info.id))
+        enabled.connect("notify::active", self._on_enabled, info)
+        group.add(enabled)
+        if info.requires_api_key:
+            self._add_key_rows(group, info)
+        modes = list(info.modes)
+        current = info.mode(self._profile.provider_mode(info.id, modes[0].id))
+        sent = action_row(_("Sent"), current.transmits)
+        requires = action_row(_("Requires"), current.requirement)
+        if len(modes) > 1:
+            combo = Adw.ComboRow(title=_("Search method"),
+                                 model=Gtk.StringList.new([mode.label for mode in modes]))
+            combo.set_selected(modes.index(current))
+            combo.connect("notify::selected", self._on_mode_changed, info, modes, sent, requires)
+            group.add(combo)
+        group.add(sent)
+        group.add(requires)
         for title, value in ((_("Sent to"), info.destination), (_("Returned"), info.returns),
                              (_("Request limits"), info.rate_limits)):
-            disclosure.add(action_row(title, value))
-        page.add(disclosure)
-        self._update_disclosure()
-        self.add(page)
+            group.add(action_row(title, value))
+        if info.destinations:
+            sites = Adw.ExpanderRow(title=_("All sites ({count})").format(
+                count=len(info.destinations)))
+            for destination in info.destinations:
+                sites.add_row(action_row(destination))
+            group.add(sites)
+        return group
 
+    def _on_enabled(self, row, _pspec, info):
+        self._guard_save(lambda: self._profile.set_provider_enabled(
+            info.id, row.get_active(), info.modes[0].id))
+
+    def _on_mode_changed(self, combo, _pspec, info, modes, sent, requires):
+        mode = modes[combo.get_selected()]
+        sent.set_subtitle(mode.transmits)
+        requires.set_subtitle(mode.requirement)
+        self._guard_save(lambda: self._profile.set_provider_mode(info.id, mode.id))
+
+    def _add_key_rows(self, group, info):
+        entry = Adw.PasswordEntryRow(title=_("API key (optional)"), show_apply_button=True)
+        status = action_row(_("Stored key"), _("Checking the keyring…"))
+        remove = Gtk.Button(label=_("Remove"), valign=Gtk.Align.CENTER, sensitive=False)
+        status.add_suffix(remove)
+        link = action_row(_("Get an API key"), info.api_key_url, activatable=True)
+        link.add_suffix(Gtk.Image(icon_name="adw-external-link-symbolic"))
+        link.connect("activated", self._open_url, info.api_key_url)
+        for row in (entry, status, link):
+            group.add(row)
+
+        def refresh(*_unused):
+            def done(key):
+                status.set_subtitle(_("A key is stored in the keyring") if key else
+                                    _("No key stored. This source is skipped."))
+                remove.set_sensitive(bool(key))
+
+            def failed(_exc):
+                status.set_subtitle(_("The desktop keyring is not available"))
+
+            run_async(lambda: secret_store.get_api_key(info.id), done, failed)
+
+        def apply_key(row):
+            key = row.get_text().strip()
+            if key:
+                row.set_text("")
+                run_async(lambda: secret_store.set_api_key(info.id, key), refresh,
+                          lambda _exc: self._notify(_("The key could not be saved to the keyring.")))
+
+        def remove_key(_button):
+            run_async(lambda: secret_store.delete_api_key(info.id), refresh,
+                      lambda _exc: self._notify(_("The key could not be removed from the keyring.")))
+
+        entry.connect("apply", apply_key)
+        remove.connect("clicked", remove_key)
+        refresh()
+
+    def _open_url(self, _row, url):
+        Gtk.UriLauncher.new(url).launch(self.get_root(), None, None, None)
+
+    # -- profile -------------------------------------------------------------
+    def _security_page(self) -> Adw.PreferencesPage:
         security = Adw.PreferencesPage(title=_("Profile"), icon_name="dialog-password-symbolic")
         group = Adw.PreferencesGroup(
             title=_("Change password"),
@@ -215,63 +287,13 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self._new_password = Adw.PasswordEntryRow(title=_("New password"))
         self._repeat_password = Adw.PasswordEntryRow(title=_("Repeat new password"))
         apply_row = action_row(_("Apply"), "")
-        self._apply_password = Gtk.Button(label=_("Change Password"), valign=Gtk.Align.CENTER)
-        self._apply_password.connect("clicked", self._on_change_password)
-        apply_row.add_suffix(self._apply_password)
+        button = Gtk.Button(label=_("Change Password"), valign=Gtk.Align.CENTER)
+        button.connect("clicked", self._on_change_password)
+        apply_row.add_suffix(button)
         for row in (self._new_password, self._repeat_password, apply_row):
             group.add(row)
         security.add(group)
-        self.add(security)
-        self._refresh_key_status()
-
-    def _update_disclosure(self):
-        mode = self._modes[self._mode_row.get_selected()]
-        self._sent_row.set_subtitle(mode.transmits)
-        self._plan_row.set_subtitle(mode.requirement)
-
-    def _on_mode_changed(self, *_args):
-        mode = self._modes[self._mode_row.get_selected()]
-        self._update_disclosure()
-        self._guard_save(lambda: self._profile.set_provider_mode(self._provider.info.id, mode.id))
-
-    def _guard_save(self, operation):
-        try:
-            operation()
-        except OSError:
-            self._notify(_("The profile could not be saved."))
-
-    def _refresh_key_status(self):
-        def done(key):
-            self._key_status.set_subtitle(
-                _("A key is stored in the keyring") if key else _("No key stored"))
-            self._remove_key.set_sensitive(bool(key))
-
-        def failed(_exc):
-            self._key_status.set_subtitle(_("The desktop keyring is not available"))
-
-        run_async(lambda: secret_store.get_api_key(self._provider.info.id), done, failed)
-
-    def _on_key_apply(self, row):
-        key = row.get_text().strip()
-        if not key:
-            return
-        row.set_text("")
-
-        def failed(_exc):
-            self._notify(_("The key could not be saved to the keyring."))
-
-        run_async(lambda: secret_store.set_api_key(self._provider.info.id, key),
-                  lambda _r: self._refresh_key_status(), failed)
-
-    def _on_key_remove(self, _button):
-        def failed(_exc):
-            self._notify(_("The key could not be removed from the keyring."))
-
-        run_async(lambda: secret_store.delete_api_key(self._provider.info.id),
-                  lambda _r: self._refresh_key_status(), failed)
-
-    def _open_url(self, _row, url):
-        Gtk.UriLauncher.new(url).launch(self.get_root(), None, None, None)
+        return security
 
     def _on_change_password(self, button):
         password = self._new_password.get_text()

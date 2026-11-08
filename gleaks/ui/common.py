@@ -76,6 +76,13 @@ def format_datetime(value: str | None) -> str:
         return _("Unknown")
 
 
+def format_time(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().strftime("%H:%M:%S")
+    except ValueError:
+        return ""
+
+
 def describe_check(status: str | None, error_code: str | None, found: int,
                    completed_at: str | None) -> str:
     if status is None:

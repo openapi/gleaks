@@ -153,6 +153,7 @@ class HibpProvider(ExposureProvider):
 
     def _check_direct(self, email: str, ctx: CheckContext) -> list[NormalizedEvent]:
         url = f"{BASE_URL}/breachedaccount/{quote(email, safe='')}?truncateResponse=false"
+        ctx.log(_("Sending the full address to {host}").format(host=self.info.destination))
         response = self._get(url, ctx, authenticated=True)
         if response.status == 404:
             return []
@@ -163,6 +164,7 @@ class HibpProvider(ExposureProvider):
 
     def _check_kanon(self, email: str, ctx: CheckContext) -> list[NormalizedEvent]:
         digest = hashlib.sha1(email.encode("utf-8")).hexdigest().upper()  # noqa: S324
+        ctx.log(_("Sending only the hash prefix {prefix}").format(prefix=digest[:6]))
         response = self._get(f"{BASE_URL}/breachedaccount/range/{digest[:6]}", ctx,
                              authenticated=True)
         if response.status == 404:
@@ -204,11 +206,14 @@ class HibpProvider(ExposureProvider):
             if ctx.cancel.is_set():
                 raise ScanCancelled
             response = ctx.http(url, headers, TIMEOUT)
+            ctx.log(_("Received HTTP {status}").format(status=response.status))
             if response.status in (200, 404):
                 return response
             if response.status in (429, 503) and attempt < MAX_RETRIES:
                 wait = self._retry_wait(response)
                 if wait is not None:
+                    ctx.log(_("Asked to slow down, retrying in {seconds:g} s").format(seconds=wait),
+                            "warning")
                     if ctx.cancel.wait(wait):
                         raise ScanCancelled
                     continue

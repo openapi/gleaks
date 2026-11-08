@@ -11,6 +11,7 @@ from gleaks.core.models import (
     ActionStatus,
     ActionType,
     ErrorCode,
+    EventKind,
     NormalizedEvent,
     ScanStatus,
     normalize_email,
@@ -167,6 +168,84 @@ def test_failed_save_keeps_the_previous_file_and_stays_dirty(path, profile, monk
     monkeypatch.undo()
     profile.save()
     assert not profile.dirty
+
+
+def test_a_version_1_profile_is_migrated(path, profile):
+    identifier = profile.add_email("a@example.com")
+    profile.record_outcome(outcome(identifier.id, [event()]))
+
+    def downgrade(conn):
+        conn.executescript(
+            "DROP TABLE search_log; ALTER TABLE breaches DROP COLUMN kind; PRAGMA user_version = 1;")
+
+    _rewrite(path, PASSWORD, downgrade)
+    migrated = Profile.open(path, PASSWORD)
+    assert migrated.exposures()[0].kind == EventKind.BREACH
+    assert migrated.log_entries("web") == []
+    migrated.close()
+    assert path.with_name(path.name + ".bak").exists()
+    assert Profile.open(path, PASSWORD).exposures()[0].title == "Adobe"
+
+
+# -- search log --------------------------------------------------------------
+def test_log_is_per_source_ordered_and_encrypted(path, profile):
+    profile.add_log("web", "info", "first secret-marker")
+    profile.add_log("hibp", "info", "other")
+    profile.add_log("web", "warning", "second")
+    assert [e.message for e in profile.log_entries("web")] == ["first secret-marker", "second"]
+    assert profile.dirty
+    profile.save()
+    assert b"secret-marker" not in path.read_bytes()
+
+
+def test_log_is_bounded(profile, monkeypatch):
+    import gleaks.core.profile as module
+
+    monkeypatch.setattr(module, "MAX_LOG_ENTRIES", 3)
+    for number in range(5):
+        profile.add_log("web", "info", str(number))
+    assert [e.message for e in profile.log_entries("web")] == ["2", "3", "4"]
+
+
+def test_scan_steps_reach_the_log():
+    lines = []
+    ctx = CheckContext(mode="direct", log=lambda message, level="info": lines.append((level, message)))
+
+    def behaviour(value, _ctx):
+        if value == "bad":
+            raise ProviderError(ErrorCode.NETWORK)
+        return []
+
+    collect(FakeProvider(behaviour), ["good", "bad"], ctx)
+    assert ("info", "Checking good") in lines and ("info", "Finished: 0 found") in lines
+    assert any(level == "error" and "says nothing" in text for level, text in lines)
+
+
+def test_web_mentions_suggest_removal_not_password_changes(profile):
+    identifier = profile.add_email("a@example.com")
+    mention = NormalizedEvent(source="web", source_event_id="x", title="Page",
+                              data_classes=("Passwords",), kind=EventKind.WEB_MENTION)
+    profile.record_outcome(outcome(identifier.id, [mention]))
+    assert [a.type for a in profile.actions()] == [ActionType.REQUEST_REMOVAL]
+    assert profile.exposures()[0].kind == EventKind.WEB_MENTION
+
+
+def test_each_source_keeps_its_own_last_check(profile):
+    identifier = profile.add_email("a@example.com")
+    profile.record_outcome(outcome(identifier.id))
+    other = ScanOutcome("hibp", identifier.id, "direct", "2026-11-08T10:00:00Z",
+                        "2026-11-08T10:00:01Z", ScanStatus.FAILED, ErrorCode.NETWORK)
+    profile.record_outcome(other)
+    assert [(c.provider_id, c.status) for c in profile.last_checks()] == [
+        ("fake", ScanStatus.COMPLETED), ("hibp", ScanStatus.FAILED)]
+
+
+def test_source_preferences_default_on(profile):
+    assert profile.provider_enabled("web")
+    profile.set_provider_enabled("web", False, "exact")
+    assert not profile.provider_enabled("web")
+    profile.set_provider_mode("web", "exact")
+    assert not profile.provider_enabled("web")
 
 
 # -- identifiers -------------------------------------------------------------

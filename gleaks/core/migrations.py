@@ -86,6 +86,18 @@ MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX idx_observations_exposure ON provider_observations(exposure_id);
     """,
+    """
+    ALTER TABLE breaches ADD COLUMN kind TEXT NOT NULL DEFAULT 'breach';
+
+    CREATE TABLE search_log (
+        id INTEGER PRIMARY KEY,
+        at TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        level TEXT NOT NULL,
+        message TEXT NOT NULL
+    );
+    CREATE INDEX idx_search_log_provider ON search_log(provider_id, id);
+    """,
 )
 
 SCHEMA_VERSION = len(MIGRATIONS)

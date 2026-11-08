@@ -20,19 +20,21 @@ from ..core.profile import DamagedProfileError, Profile  # noqa: E402
 from ..core.scanning import ScanOutcome, ScanRequest, run_scan  # noqa: E402
 from ..i18n import _, ngettext  # noqa: E402
 from ..providers import PROVIDERS  # noqa: E402
-from ..providers.base import CheckContext  # noqa: E402
+from ..providers.base import CheckContext, ExposureProvider  # noqa: E402
 from .common import action_row, boxed_list, clamped, run_async  # noqa: E402
 from .dialogs import CreateProfileDialog, ExposureDialog, PreferencesDialog, UnlockDialog  # noqa: E402
-from .pages import ActionsPage, DashboardPage, ExposuresPage, IdentifiersPage  # noqa: E402
+from .pages import ActionsPage, ActivityPage, DashboardPage, ExposuresPage, IdentifiersPage  # noqa: E402
 
 log = logging.getLogger(__name__)
 _SAVE_FAILED = _("The profile could not be saved. Your latest changes are not on disk yet.")
 
 
 class _ScanRun:
-    def __init__(self, total: int):
+    def __init__(self, total: int, sources: int):
         self.cancel = threading.Event()
         self.total = total
+        self.sources_left = sources
+        self.source_errors: dict[str, int] = {}
         self.done = 0
         self.new = 0
         self.errors: list[str] = []
@@ -45,7 +47,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.set_size_request(360, 400)
         self.profile: Profile | None = None
         self._scan: _ScanRun | None = None
-        self.provider = PROVIDERS["hibp"]
+        self.providers = list(PROVIDERS.values())
         self.toasts = Adw.ToastOverlay()
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
         self.toasts.set_child(self.stack)
@@ -97,16 +99,18 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _build_profile_view(self) -> Gtk.Widget:
         self.views = Adw.ViewStack(vexpand=True)
-        self.dashboard = DashboardPage()
+        self.dashboard = DashboardPage({p.info.id: p.info.name for p in self.providers})
         self.identifiers = IdentifiersPage(self._refresh_pages, self.show_toast,
                                            self._confirm_remove)
         self.exposures = ExposuresPage(self._open_exposure)
         self.actions_page = ActionsPage(self._set_action_status)
+        self.activity = ActivityPage(self.providers, self._clear_log)
         for page, name, title, icon in (
             (self.dashboard, "dashboard", _("Overview"), "view-grid-symbolic"),
             (self.identifiers, "identifiers", _("Identifiers"), "mail-unread-symbolic"),
             (self.exposures, "exposures", _("Exposures"), "dialog-warning-symbolic"),
             (self.actions_page, "actions", _("Actions"), "emblem-ok-symbolic"),
+            (self.activity, "activity", _("Activity"), "utilities-terminal-symbolic"),
         ):
             self.views.add_titled_with_icon(page, name, title, icon)
 
@@ -251,6 +255,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.title_widget.set_title(profile.name)
         self.views.set_visible_child_name("dashboard")
         self._refresh_pages()
+        self.activity.refresh(profile)
         self.stack.set_visible_child_name("profile")
 
     def _release_profile(self) -> bool:
@@ -311,8 +316,10 @@ class MainWindow(Adw.ApplicationWindow):
             self.profile.mark_reviewed(exposure_id)
         except OSError:
             self.show_toast(_SAVE_FAILED)
-        dialog = ExposureDialog(self.profile, self.profile.exposure(exposure_id),
-                                self.provider.info.attribution, self._set_action_status)
+        exposure = self.profile.exposure(exposure_id)
+        source = next((p.info.attribution for p in self.providers
+                       if p.info.id == exposure.source), exposure.source)
+        dialog = ExposureDialog(self.profile, exposure, source, self._set_action_status)
         dialog.connect("closed", lambda *_a: self._refresh_pages())
         dialog.present(self)
 
@@ -333,7 +340,16 @@ class MainWindow(Adw.ApplicationWindow):
 
     def show_preferences(self) -> None:
         if self.profile is not None:
-            PreferencesDialog(self.profile, self.provider, self.show_toast).present(self)
+            PreferencesDialog(self.profile, self.providers, self.show_toast).present(self)
+
+    def _clear_log(self) -> None:
+        if self.profile is None:
+            return
+        try:
+            self.profile.clear_log()
+        except OSError:
+            self.show_toast(_SAVE_FAILED)
+        self.activity.refresh(self.profile)
 
     # -- scanning ------------------------------------------------------------
     def start_scan(self) -> None:
@@ -341,35 +357,61 @@ class MainWindow(Adw.ApplicationWindow):
             return
         identifiers = self.profile.identifiers(enabled_only=True)
         if not identifiers:
-            self.show_toast(_("Add an email address to scan first."))
+            self.show_toast(_("Add an email, nickname or name to scan first."))
             self.views.set_visible_child_name("identifiers")
             return
-        requests = [ScanRequest(item.id, item.value) for item in identifiers]
+        requests = [ScanRequest(item.id, item.value, item.type) for item in identifiers]
+        sources = [p for p in self.providers if self.profile.provider_enabled(p.info.id)
+                   and self._requests_for(p, requests)]
 
-        def key_found(key):
-            if not key:
-                self.show_toast(_("Add your API key to start scanning."))
+        def keys_found(keys):
+            plan = [(p, keys.get(p.info.id), self._requests_for(p, requests)) for p in sources
+                    if keys.get(p.info.id) or not p.info.requires_api_key]
+            skipped = [p for p in sources if p.info.requires_api_key and not keys.get(p.info.id)]
+            if not plan:
+                self.show_toast(_("No source can run. Turn on a source or add an API key."))
                 self.show_preferences()
                 return
-            self._ask_consent(requests, key)
+            self._ask_consent(requests, plan, skipped)
 
-        def key_failed(_exc):
-            self.show_toast(_("The desktop keyring is not available, so the API key "
-                              "cannot be read."))
+        run_async(lambda: self._read_keys(sources), keys_found, lambda _exc: keys_found({}))
 
-        info = self.provider.info
-        run_async(lambda: secret_store.get_api_key(info.id), key_found, key_failed)
+    @staticmethod
+    def _requests_for(provider: ExposureProvider, requests: list[ScanRequest]) -> list[ScanRequest]:
+        return [r for r in requests if r.kind in provider.info.supported_identifiers]
 
-    def _ask_consent(self, requests: list[ScanRequest], key: str) -> None:
+    @staticmethod
+    def _read_keys(providers: list[ExposureProvider]) -> dict[str, str | None]:
+        """Keys are optional: a source whose key cannot be read is skipped."""
+        keys: dict[str, str | None] = {}
+        for provider in providers:
+            if provider.info.requires_api_key:
+                try:
+                    keys[provider.info.id] = secret_store.get_api_key(provider.info.id)
+                except secret_store.SecretStoreError:
+                    keys[provider.info.id] = None
+        return keys
+
+    def _mode_for(self, provider: ExposureProvider):
+        info = provider.info
+        return info.mode(self.profile.provider_mode(info.id, info.modes[0].id))
+
+    def _ask_consent(self, requests: list[ScanRequest], plan: list, skipped: list) -> None:
         """Nothing leaves this computer before the user has seen exactly what will."""
-        info = self.provider.info
-        mode = info.mode(self.profile.provider_mode(info.id, info.modes[0].id))
-        addresses = "\n".join(request.value for request in requests)
-        body = _("{source} ({destination}) will be asked about:\n\n{addresses}\n\n"
-                 "Sent for each address: {sent}.\nReturned: {returned}\nLimits: {limits}").format(
-            source=info.name, destination=info.destination, addresses=addresses,
-            sent=mode.transmits, returned=info.returns, limits=info.rate_limits)
-        dialog = Adw.AlertDialog(heading=_("Send to {source}?").format(source=info.name), body=body)
+        sections = [_("Only check identifiers that belong to you.\n\n{addresses}").format(
+            addresses="\n".join(request.value for request in requests))]
+        for provider, _key, _requests in plan:
+            info = provider.info
+            sections.append(
+                _("{source} ({destination})\nSent: {sent}.\nReturned: {returned}\n"
+                  "Limits: {limits}").format(
+                    source=info.name, destination=info.destination,
+                    sent=self._mode_for(provider).transmits, returned=info.returns,
+                    limits=info.rate_limits))
+        for provider in skipped:
+            sections.append(_("{source}: skipped, no API key.").format(source=provider.info.name))
+        dialog = Adw.AlertDialog(heading=_("Check These Identifiers?"),
+                                 body="\n\n".join(sections))
         dialog.add_response("cancel", _("Cancel"))
         dialog.add_response("scan", _("Send and Check"))
         dialog.set_response_appearance("scan", Adw.ResponseAppearance.SUGGESTED)
@@ -378,28 +420,45 @@ class MainWindow(Adw.ApplicationWindow):
 
         def responded(_dialog, response):
             if response == "scan" and self.profile is not None:
-                self._run_scan(requests, key, mode.id)
+                self._run_scan(plan, skipped)
 
         dialog.connect("response", responded)
         dialog.present(self)
 
-    def _run_scan(self, requests: list[ScanRequest], key: str, mode: str) -> None:
-        run = _ScanRun(len(requests))
+    def _run_scan(self, plan: list, skipped: list) -> None:
+        run = _ScanRun(sum(len(requests) for _p, _k, requests in plan), len(plan))
         self._scan = run
         self.scan_button.set_sensitive(False)
         self._update_banner(run)
         self.banner.set_revealed(True)
-        provider = self.provider
-        ctx = CheckContext(mode=mode, api_key=key, cancel=run.cancel)
+        self.views.set_visible_child_name("activity")
+        for provider in skipped:
+            self.activity.set_status(provider.info.id, _("Skipped, no API key"), False)
+        for provider, key, requests in plan:
+            self.activity.set_status(provider.info.id, _("Running…"), True)
+            # Each source has its own thread: one being slow or failing cannot hold up another.
+            mode = self._mode_for(provider).id
+            threading.Thread(target=self._source_worker, args=(run, provider, key, mode, requests),
+                             daemon=True).start()
 
-        def worker():
-            try:
-                run_scan(provider, requests, ctx,
-                         lambda outcome: GLib.idle_add(self._on_outcome, run, outcome))
-            finally:
-                GLib.idle_add(self._on_scan_finished, run)
+    def _source_worker(self, run: _ScanRun, provider: ExposureProvider, key, mode: str,
+                       requests: list[ScanRequest]) -> None:
+        info = provider.info
 
-        threading.Thread(target=worker, daemon=True).start()
+        def log(message, level="info"):
+            GLib.idle_add(self._on_log, run, info.id, level, message)
+
+        ctx = CheckContext(mode=mode, api_key=key, cancel=run.cancel, log=log)
+        try:
+            run_scan(provider, requests, ctx,
+                     lambda outcome: GLib.idle_add(self._on_outcome, run, outcome))
+        finally:
+            GLib.idle_add(self._on_source_finished, run, info.id)
+
+    def _on_log(self, run: _ScanRun, provider_id: str, level: str, message: str):
+        if run is self._scan and self.profile is not None:
+            self.activity.add_entry(self.profile.add_log(provider_id, level, message))
+        return GLib.SOURCE_REMOVE
 
     def _update_banner(self, run: _ScanRun) -> None:
         self.banner.set_title(_("Checking {done} of {total}…").format(
@@ -413,6 +472,7 @@ class MainWindow(Adw.ApplicationWindow):
             run.cancelled = True
         elif outcome.status == ScanStatus.FAILED:
             run.errors.append(outcome.error_code or "")
+            run.source_errors[outcome.provider_id] = run.source_errors.get(outcome.provider_id, 0) + 1
         try:
             run.new += self.profile.record_outcome(outcome)
         except OSError:
@@ -421,9 +481,21 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_pages()
         return GLib.SOURCE_REMOVE
 
-    def _on_scan_finished(self, run: _ScanRun):
+    def _on_source_finished(self, run: _ScanRun, provider_id: str):
         if run is not self._scan:
             return GLib.SOURCE_REMOVE
+        failed = run.source_errors.get(provider_id, 0)
+        self.activity.set_status(provider_id, (
+            _("Cancelled") if run.cancel.is_set() else
+            _("Finished with {count} failed").format(count=failed) if failed else _("Finished")),
+            False)
+        run.sources_left -= 1
+        if run.sources_left:
+            return GLib.SOURCE_REMOVE
+        try:
+            self.profile.save()
+        except OSError:
+            self.show_toast(_SAVE_FAILED)
         self._scan = None
         self.banner.set_revealed(False)
         self.scan_button.set_sensitive(True)

@@ -21,6 +21,8 @@ def utcnow() -> str:
 
 class IdentifierType(StrEnum):
     EMAIL = "email"
+    USERNAME = "username"
+    TEXT = "text"
 
 
 class ActionStatus(StrEnum):
@@ -36,6 +38,14 @@ class ActionType(StrEnum):
     REVOKE_SESSIONS = "revoke_sessions"
     REVIEW_RECOVERY = "review_recovery"
     CHECK_SIGNINS = "check_signins"
+    REQUEST_REMOVAL = "request_removal"
+    REVIEW_PROFILE = "review_profile"
+
+
+class EventKind(StrEnum):
+    BREACH = "breach"
+    WEB_MENTION = "web_mention"
+    PROFILE_PAGE = "profile_page"
 
 
 class ScanStatus(StrEnum):
@@ -58,6 +68,7 @@ class ErrorCode(StrEnum):
     INVALID_CREDENTIALS = "invalid_credentials"
     NOT_AUTHORIZED = "not_authorized"
     RATE_LIMITED = "rate_limited"
+    BLOCKED = "blocked"
     UNAVAILABLE = "unavailable"
     INVALID_RESPONSE = "invalid_response"
     NETWORK = "network"
@@ -71,6 +82,7 @@ def describe_error(code: str) -> str:
         ErrorCode.INVALID_CREDENTIALS: _("The source rejected the API key."),
         ErrorCode.NOT_AUTHORIZED: _("Your plan does not allow this kind of search."),
         ErrorCode.RATE_LIMITED: _("The source's request limit was reached. Try again later."),
+        ErrorCode.BLOCKED: _("The search engine asked for a human check. See Activity."),
         ErrorCode.UNAVAILABLE: _("The source is temporarily unavailable."),
         ErrorCode.INVALID_RESPONSE: _("The source sent a response GLeaks could not understand."),
         ErrorCode.NETWORK: _("The source could not be reached. Check your connection."),
@@ -88,6 +100,30 @@ def normalize_email(value: str) -> str:
     return email
 
 
+_USERNAME_RE = re.compile(r"^[\w.-]{2,64}$")
+
+
+def detect_identifier(value: str) -> tuple[IdentifierType, str]:
+    """Classify free text as an email, a nickname or a phrase, and canonicalize it."""
+    text = " ".join(value.split())
+    if "@" in text[1:]:
+        return IdentifierType.EMAIL, normalize_email(text)
+    name = text.removeprefix("@").lower()
+    if _USERNAME_RE.match(name):
+        return IdentifierType.USERNAME, name
+    if 2 <= len(text) <= 128 and text.isprintable():
+        return IdentifierType.TEXT, text
+    raise ValueError(_("Enter an email address, a nickname or a name."))
+
+
+def describe_identifier_type(kind: str) -> str:
+    return {
+        IdentifierType.EMAIL: _("Email address"),
+        IdentifierType.USERNAME: _("Nickname"),
+        IdentifierType.TEXT: _("Name or phrase"),
+    }.get(kind, kind)
+
+
 @dataclass(frozen=True)
 class NormalizedEvent:
     """A provider's answer, reduced to the fields GLeaks chooses to keep."""
@@ -103,6 +139,7 @@ class NormalizedEvent:
     verification: Verification = Verification.VERIFIED
     flags: tuple[str, ...] = ()
     source_url: str | None = None
+    kind: EventKind = EventKind.BREACH
 
 
 @dataclass(frozen=True)
@@ -148,6 +185,16 @@ class Exposure:
     is_new: bool
     open_actions: int = 0
     actions: tuple[Action, ...] = field(default=())
+    kind: EventKind = EventKind.BREACH
+
+
+@dataclass(frozen=True)
+class LogEntry:
+    id: int
+    at: str
+    provider_id: str
+    level: str
+    message: str
 
 
 @dataclass(frozen=True)
@@ -174,8 +221,13 @@ _RECOVERY_CLASSES = {"security questions and answers"}
 _SESSION_CLASSES = {"auth tokens", "session tokens", "browser cookies"}
 
 
-def recommended_actions(data_classes: tuple[str, ...]) -> tuple[ActionType, ...]:
+def recommended_actions(data_classes: tuple[str, ...],
+                        kind: EventKind = EventKind.BREACH) -> tuple[ActionType, ...]:
     """Map exposed data to suggestions, without claiming an account is compromised."""
+    if kind == EventKind.WEB_MENTION:
+        return (ActionType.REQUEST_REMOVAL,)
+    if kind == EventKind.PROFILE_PAGE:
+        return (ActionType.REVIEW_PROFILE,)
     classes = {item.casefold() for item in data_classes}
     actions: list[ActionType] = []
     if classes & _PASSWORD_CLASSES:
@@ -195,6 +247,8 @@ def describe_action(action: ActionType) -> str:
         ActionType.REVOKE_SESSIONS: _("Sign out of active sessions"),
         ActionType.REVIEW_RECOVERY: _("Review the account's recovery options"),
         ActionType.CHECK_SIGNINS: _("Look for sign-ins you don't recognize"),
+        ActionType.REQUEST_REMOVAL: _("Ask the site to remove this information"),
+        ActionType.REVIEW_PROFILE: _("Check whether this profile is yours"),
     }[action]
 
 

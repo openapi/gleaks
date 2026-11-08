@@ -14,7 +14,10 @@
     <p>Features:</p>
     <ul>
       <li>Encrypted, portable profiles you can move between computers</li>
-      <li>Check email addresses against Have I Been Pwned with your own API key</li>
+      <li>See which sites have a public page with your nickname, with no API key</li>
+      <li>Search the web for exact mentions of your identifiers</li>
+      <li>Optionally check email addresses against Have I Been Pwned with your own API key</li>
+      <li>Follow each search step by step in a live log</li>
       <li>You see exactly what will be sent before anything leaves your computer</li>
       <li>A private search mode that never sends the full address, on supported plans</li>
       <li>A lasting history of what each source reported, and when</li>

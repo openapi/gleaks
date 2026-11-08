@@ -56,6 +56,18 @@ class Fake(ExposureProvider):
             data_classes=("Passwords",))]
 
 
+class Keyless(Fake):
+    info = ProviderInfo("keyless", "Keyless Source", "1", "MIT", "https://x", "free.example",
+                        ("email", "username"), (ProviderMode("exact", "Exact", "The query", "No key"),),
+                        False, "", "Free", "None", "Pages", "Found by Keyless",
+                        min_request_interval=0)
+
+    def check(self, value, ctx):
+        self.seen.append((value, ctx.api_key))
+        ctx.log("Sending query")
+        return []
+
+
 @pytest.fixture(scope="module")
 def app():
     application = Adw.Application(application_id="io.github.openapi.GLeaks.Test",
@@ -68,8 +80,10 @@ def app():
 def harness(app, tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(secret_store, "get_api_key", lambda _p: "KEY")
+    fake, keyless = Fake(), Keyless()
+    monkeypatch.setattr(window_module, "PROVIDERS", {"fake": fake, "keyless": keyless})
     win = MainWindow(application=app)
-    win.provider = Fake()
+    win.fake, win.keyless = fake, keyless
     win.present()
     profile = Profile.create(tmp_path / "t.gleaks", "password1", "<i>Test</i>", params=FAST)
     win._show_profile(profile)
@@ -128,21 +142,32 @@ def test_scan_without_identifiers_explains_itself(harness):
 
 
 def test_invalid_address_is_not_added(harness):
-    add_address(harness, "nope")
+    add_address(harness, "a@b")
     assert harness.profile.identifiers() == []
+
+
+def test_a_nickname_only_reaches_sources_that_accept_it(harness):
+    add_address(harness, "francescobianco")
+    assert harness.profile.identifiers()[0].type == "username"
+    body = scan(harness)
+    assert "free.example" in body and "fake.example" not in body
+    assert harness.fake.seen == []
+    assert harness.keyless.seen == [("francescobianco", None)]
 
 
 def test_consent_precedes_every_transmission(harness):
     add_address(harness)
     body = scan(harness, consent="cancel")
-    assert harness.provider.seen == []
+    assert harness.fake.seen == [] and harness.keyless.seen == []
     assert "me@example.com" in body and "fake.example" in body and "The full address" in body
+    assert "free.example" in body
 
 
 def test_full_flow_with_hostile_text(harness):
     add_address(harness)
     scan(harness)
-    assert harness.provider.seen == [("me@example.com", "KEY")]
+    assert harness.fake.seen == [("me@example.com", "KEY")]
+    assert harness.keyless.seen == [("me@example.com", None)]
     stats = harness.profile.stats()
     assert (stats.events, stats.new_evidence) == (1, 1)
 
@@ -163,20 +188,43 @@ def test_full_flow_with_hostile_text(harness):
 
 def test_failed_scan_is_not_shown_as_clean(harness):
     add_address(harness)
-    harness.provider.fail = True
+    harness.fake.fail = True
     scan(harness)
     assert harness.profile.exposures() == []
-    subtitle = rows(harness.dashboard._checks)[0].get_subtitle()
-    assert subtitle.startswith("Check failed")
-    assert "Nothing known" not in subtitle
+    subtitles = [row.get_subtitle() for row in rows(harness.dashboard._checks)]
+    assert subtitles[0].startswith("Fake Source: Check failed")
+    assert "Nothing known" not in subtitles[0]
+    # The other source is independent of the failure.
+    assert subtitles[1].startswith("Keyless Source: Nothing known")
 
 
-def test_missing_api_key_opens_preferences(harness, monkeypatch):
+def test_api_key_is_optional(harness, monkeypatch):
     monkeypatch.setattr(secret_store, "get_api_key", lambda _p: None)
+    add_address(harness)
+    body = scan(harness)
+    assert "Fake Source: skipped" in body
+    assert harness.fake.seen == []
+    assert harness.keyless.seen == [("me@example.com", None)]
+
+
+def test_scan_process_is_logged_per_source(harness):
+    add_address(harness)
+    scan(harness)
+    assert harness.views.get_visible_child_name() == "activity"
+    assert any("Sending query" in e.message for e in harness.profile.log_entries("keyless"))
+    assert harness.activity.tracks["keyless"].lines.get_first_child() is not None
+    assert harness.activity.tracks["keyless"].status.get_label() == "Finished"
+    harness._clear_log()
+    assert harness.profile.log_entries("keyless") == []
+
+
+def test_with_no_runnable_source_preferences_open(harness, monkeypatch):
+    monkeypatch.setattr(secret_store, "get_api_key", lambda _p: None)
+    harness.profile.set_provider_enabled("keyless", False, "exact")
     add_address(harness)
     harness.start_scan()
     assert isinstance(visible_dialog(harness), Adw.PreferencesDialog)
-    assert harness.provider.seen == []
+    assert harness.fake.seen == []
     harness.get_visible_dialog().force_close()
     pump(lambda: harness.get_visible_dialog() is None)
 

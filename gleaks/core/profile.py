@@ -23,12 +23,15 @@ from .models import (
     ActionType,
     Exposure,
     Identifier,
+    EventKind,
     IdentifierType,
     LastCheck,
+    LogEntry,
     NormalizedEvent,
     ScanStatus,
     Stats,
     Verification,
+    detect_identifier,
     normalize_email,
     recommended_actions,
     utcnow,
@@ -36,6 +39,7 @@ from .models import (
 from .scanning import ScanOutcome
 
 MAX_PROFILE_BYTES = 256 * 1024 * 1024
+MAX_LOG_ENTRIES = 2000
 
 
 class DamagedProfileError(Exception):
@@ -168,14 +172,21 @@ class Profile:
 
     # -- identifiers ---------------------------------------------------------
     def add_email(self, value: str, label: str = "") -> Identifier:
-        email = normalize_email(value)
+        return self._add_identifier(IdentifierType.EMAIL, normalize_email(value), label)
+
+    def add_identifier(self, value: str, label: str = "") -> Identifier:
+        """Add an email, nickname or phrase, recognized from its form."""
+        kind, canonical = detect_identifier(value)
+        return self._add_identifier(kind, canonical, label)
+
+    def _add_identifier(self, kind: IdentifierType, value: str, label: str) -> Identifier:
         try:
             with self._conn:
                 cursor = self._conn.execute(
                     "INSERT INTO identifiers (type, value, label, created_at) VALUES (?, ?, ?, ?)",
-                    (IdentifierType.EMAIL, email, label, utcnow()))
+                    (kind, value, label, utcnow()))
         except sqlite3.IntegrityError as exc:
-            raise DuplicateIdentifierError(email) from exc
+            raise DuplicateIdentifierError(value) from exc
         self.save()
         return self.identifier(cursor.lastrowid)
 
@@ -209,6 +220,19 @@ class Profile:
         self.save()
 
     # -- provider settings ---------------------------------------------------
+    def provider_enabled(self, provider_id: str) -> bool:
+        row = self._conn.execute("SELECT enabled FROM providers WHERE id = ?",
+                                 (provider_id,)).fetchone()
+        return bool(row[0]) if row else True
+
+    def set_provider_enabled(self, provider_id: str, enabled: bool, default_mode: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO providers (id, enabled, mode) VALUES (?, ?, ?) "
+                "ON CONFLICT (id) DO UPDATE SET enabled = excluded.enabled",
+                (provider_id, int(enabled), default_mode))
+        self.save()
+
     def provider_mode(self, provider_id: str, default: str) -> str:
         row = self._conn.execute("SELECT mode FROM providers WHERE id = ?",
                                  (provider_id,)).fetchone()
@@ -245,8 +269,8 @@ class Profile:
         now = outcome.completed_at
         breach_id = self._conn.execute(
             "INSERT INTO breaches (source, source_event_id, title, domain, description,"
-            " event_date, published_at, data_classes, verification, flags, source_url)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " event_date, published_at, data_classes, verification, flags, source_url, kind)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT (source, source_event_id) DO UPDATE SET"
             " title = excluded.title, domain = excluded.domain,"
             " description = excluded.description, event_date = excluded.event_date,"
@@ -255,7 +279,7 @@ class Profile:
             " source_url = excluded.source_url RETURNING id",
             (event.source, event.source_event_id, event.title, event.domain, event.description,
              event.event_date, event.published_at, json.dumps(list(event.data_classes)),
-             event.verification, json.dumps(list(event.flags)), event.source_url),
+             event.verification, json.dumps(list(event.flags)), event.source_url, event.kind),
         ).fetchone()[0]
         row = self._conn.execute(
             "SELECT id FROM exposures WHERE identifier_id = ? AND breach_id = ?",
@@ -274,15 +298,44 @@ class Profile:
             " VALUES (?, ?, ?, ?)", (exposure_id, scan_id, outcome.provider_id, now))
         self._conn.executemany(
             "INSERT OR IGNORE INTO actions (exposure_id, type, created_at) VALUES (?, ?, ?)",
-            [(exposure_id, action, now) for action in recommended_actions(event.data_classes)])
+            [(exposure_id, action, now)
+             for action in recommended_actions(event.data_classes, event.kind)])
         return int(is_new)
 
     def last_checks(self) -> list[LastCheck]:
         rows = self._conn.execute(
             "SELECT i.id, i.value, s.provider_id, s.completed_at, s.status, s.error_code, s.found"
-            " FROM identifiers i LEFT JOIN scans s ON s.id ="
-            " (SELECT MAX(id) FROM scans WHERE identifier_id = i.id) ORDER BY i.value")
+            " FROM identifiers i LEFT JOIN scans s ON s.id IN (SELECT MAX(id) FROM scans"
+            " WHERE identifier_id = i.id GROUP BY provider_id) ORDER BY i.value, s.provider_id")
         return [LastCheck(r[0], r[1], r[2], r[3], r[4], r[5], r[6] or 0) for r in rows]
+
+    # -- search log ----------------------------------------------------------
+    def add_log(self, provider_id: str, level: str, message: str) -> LogEntry:
+        """Append to the log kept inside the encrypted profile.
+
+        Not saved on every line: the next outcome or the end of the scan does it.
+        """
+        now = utcnow()
+        with self._conn:
+            entry_id = self._conn.execute(
+                "INSERT INTO search_log (at, provider_id, level, message) VALUES (?, ?, ?, ?)",
+                (now, provider_id, level, message)).lastrowid
+            self._conn.execute("DELETE FROM search_log WHERE id <= ?",
+                               (entry_id - MAX_LOG_ENTRIES,))
+        self.dirty = True
+        return LogEntry(entry_id, now, provider_id, level, message)
+
+    def log_entries(self, provider_id: str, limit: int = 200) -> list[LogEntry]:
+        """Most recent entries for one source, oldest first."""
+        rows = self._conn.execute(
+            "SELECT id, at, provider_id, level, message FROM search_log"
+            " WHERE provider_id = ? ORDER BY id DESC LIMIT ?", (provider_id, limit)).fetchall()
+        return [LogEntry(*row) for row in reversed(rows)]
+
+    def clear_log(self) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM search_log")
+        self.save()
 
     # -- evidence ------------------------------------------------------------
     def stats(self) -> Stats:
@@ -298,7 +351,8 @@ class Profile:
     _EXPOSURE_SELECT = (
         "SELECT e.id, e.breach_id, e.identifier_id, i.value AS identifier_value, b.source,"
         " b.title, b.domain, b.description, b.event_date, b.published_at, b.data_classes,"
-        " b.verification, b.flags, b.source_url, e.first_seen_at, e.last_seen_at, e.reviewed_at,"
+        " b.verification, b.flags, b.source_url, b.kind, e.first_seen_at, e.last_seen_at,"
+        " e.reviewed_at,"
         " (SELECT COUNT(*) FROM actions a WHERE a.exposure_id = e.id"
         "  AND a.status IN ('OPEN', 'IN_PROGRESS')) AS open_actions"
         " FROM exposures e JOIN breaches b ON b.id = e.breach_id"
@@ -315,7 +369,7 @@ class Profile:
             verification=Verification(row["verification"]), flags=tuple(json.loads(row["flags"])),
             source_url=row["source_url"], first_seen_at=row["first_seen_at"],
             last_seen_at=row["last_seen_at"], is_new=row["reviewed_at"] is None,
-            open_actions=row["open_actions"], actions=actions)
+            open_actions=row["open_actions"], actions=actions, kind=EventKind(row["kind"]))
 
     def exposures(self, identifier_id: int | None = None, query: str = "") -> list[Exposure]:
         clauses, params = [], []

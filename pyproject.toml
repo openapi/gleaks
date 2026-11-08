@@ -34,6 +34,7 @@ version = { attr = "gleaks.__version__" }
 
 [tool.setuptools.package-data]
 "gleaks.ui" = ["style.css"]
+"gleaks.providers" = ["sites.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

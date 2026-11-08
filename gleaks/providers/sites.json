@@ -1,0 +1,237 @@
+[
+  {
+    "id": "github",
+    "name": "GitHub",
+    "host": "github.com",
+    "profile": "https://github.com/{name}",
+    "probe": "https://github.com/{name}",
+    "example": "torvalds"
+  },
+  {
+    "id": "gitlab",
+    "name": "GitLab",
+    "host": "gitlab.com",
+    "profile": "https://gitlab.com/{name}",
+    "probe": "https://gitlab.com/api/v4/users?username={name}",
+    "absent_exact": "[]",
+    "example": "gaearon"
+  },
+  {
+    "id": "gnome-gitlab",
+    "name": "GNOME GitLab",
+    "host": "gitlab.gnome.org",
+    "profile": "https://gitlab.gnome.org/{name}",
+    "probe": "https://gitlab.gnome.org/api/v4/users?username={name}",
+    "absent_exact": "[]",
+    "example": "john"
+  },
+  {
+    "id": "salsa",
+    "name": "Debian Salsa",
+    "host": "salsa.debian.org",
+    "profile": "https://salsa.debian.org/{name}",
+    "probe": "https://salsa.debian.org/api/v4/users?username={name}",
+    "absent_exact": "[]",
+    "example": "alex"
+  },
+  {
+    "id": "codeberg",
+    "name": "Codeberg",
+    "host": "codeberg.org",
+    "profile": "https://codeberg.org/{name}",
+    "probe": "https://codeberg.org/api/v1/users/{name}",
+    "example": "torvalds"
+  },
+  {
+    "id": "sourcehut",
+    "name": "SourceHut",
+    "host": "sr.ht",
+    "profile": "https://sr.ht/~{name}/",
+    "probe": "https://sr.ht/~{name}/",
+    "example": "github"
+  },
+  {
+    "id": "launchpad",
+    "name": "Launchpad",
+    "host": "launchpad.net",
+    "profile": "https://launchpad.net/~{name}",
+    "probe": "https://api.launchpad.net/devel/~{name}",
+    "example": "torvalds"
+  },
+  {
+    "id": "dockerhub",
+    "name": "Docker Hub",
+    "host": "hub.docker.com",
+    "profile": "https://hub.docker.com/u/{name}",
+    "probe": "https://hub.docker.com/v2/users/{name}/",
+    "example": "torvalds"
+  },
+  {
+    "id": "crates",
+    "name": "crates.io",
+    "host": "crates.io",
+    "profile": "https://crates.io/users/{name}",
+    "probe": "https://crates.io/api/v1/users/{name}",
+    "example": "alex"
+  },
+  {
+    "id": "rubygems",
+    "name": "RubyGems",
+    "host": "rubygems.org",
+    "profile": "https://rubygems.org/profiles/{name}",
+    "probe": "https://rubygems.org/api/v1/profiles/{name}.json",
+    "example": "torvalds"
+  },
+  {
+    "id": "packagist",
+    "name": "Packagist",
+    "host": "packagist.org",
+    "profile": "https://packagist.org/users/{name}/",
+    "probe": "https://packagist.org/users/{name}/",
+    "example": "john"
+  },
+  {
+    "id": "huggingface",
+    "name": "Hugging Face",
+    "host": "huggingface.co",
+    "profile": "https://huggingface.co/{name}",
+    "probe": "https://huggingface.co/api/users/{name}/overview",
+    "example": "torvalds"
+  },
+  {
+    "id": "keybase",
+    "name": "Keybase",
+    "host": "keybase.io",
+    "profile": "https://keybase.io/{name}",
+    "probe": "https://keybase.io/{name}",
+    "example": "torvalds"
+  },
+  {
+    "id": "hackernews",
+    "name": "Hacker News",
+    "host": "news.ycombinator.com",
+    "profile": "https://news.ycombinator.com/user?id={name}",
+    "probe": "https://hacker-news.firebaseio.com/v0/user/{name}.json",
+    "absent_exact": "null",
+    "example": "john"
+  },
+  {
+    "id": "devto",
+    "name": "DEV",
+    "host": "dev.to",
+    "profile": "https://dev.to/{name}",
+    "probe": "https://dev.to/api/users/by_username?url={name}",
+    "example": "john"
+  },
+  {
+    "id": "lobsters",
+    "name": "Lobsters",
+    "host": "lobste.rs",
+    "profile": "https://lobste.rs/~{name}",
+    "probe": "https://lobste.rs/~{name}",
+    "example": "john"
+  },
+  {
+    "id": "mastodon",
+    "name": "Mastodon (mastodon.social)",
+    "host": "mastodon.social",
+    "profile": "https://mastodon.social/@{name}",
+    "probe": "https://mastodon.social/api/v1/accounts/lookup?acct={name}",
+    "example": "torvalds"
+  },
+  {
+    "id": "bluesky",
+    "name": "Bluesky",
+    "host": "bsky.app",
+    "profile": "https://bsky.app/profile/{name}.bsky.social",
+    "probe": "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor={name}.bsky.social",
+    "absent_status": [
+      400
+    ],
+    "example": "torvalds"
+  },
+  {
+    "id": "lichess",
+    "name": "Lichess",
+    "host": "lichess.org",
+    "profile": "https://lichess.org/@/{name}",
+    "probe": "https://lichess.org/api/user/{name}",
+    "example": "torvalds"
+  },
+  {
+    "id": "chesscom",
+    "name": "Chess.com",
+    "host": "chess.com",
+    "profile": "https://www.chess.com/member/{name}",
+    "probe": "https://api.chess.com/pub/player/{name}",
+    "example": "torvalds"
+  },
+  {
+    "id": "steam",
+    "name": "Steam",
+    "host": "steamcommunity.com",
+    "profile": "https://steamcommunity.com/id/{name}",
+    "probe": "https://steamcommunity.com/id/{name}",
+    "absent_body": "The specified profile could not be found",
+    "example": "torvalds"
+  },
+  {
+    "id": "flickr",
+    "name": "Flickr",
+    "host": "flickr.com",
+    "profile": "https://www.flickr.com/people/{name}/",
+    "probe": "https://www.flickr.com/people/{name}/",
+    "example": "github"
+  },
+  {
+    "id": "soundcloud",
+    "name": "SoundCloud",
+    "host": "soundcloud.com",
+    "profile": "https://soundcloud.com/{name}",
+    "probe": "https://soundcloud.com/{name}",
+    "example": "torvalds"
+  },
+  {
+    "id": "vimeo",
+    "name": "Vimeo",
+    "host": "vimeo.com",
+    "profile": "https://vimeo.com/{name}",
+    "probe": "https://vimeo.com/{name}",
+    "example": "github"
+  },
+  {
+    "id": "osm",
+    "name": "OpenStreetMap",
+    "host": "openstreetmap.org",
+    "profile": "https://www.openstreetmap.org/user/{name}",
+    "probe": "https://www.openstreetmap.org/user/{name}",
+    "example": "john"
+  },
+  {
+    "id": "wikipedia",
+    "name": "Wikipedia (en)",
+    "host": "en.wikipedia.org",
+    "profile": "https://en.wikipedia.org/wiki/User:{name}",
+    "probe": "https://en.wikipedia.org/w/api.php?action=query&list=users&ususers={name}&format=json",
+    "absent_body": "\"missing\"",
+    "example": "torvalds"
+  },
+  {
+    "id": "gravatar",
+    "name": "Gravatar",
+    "host": "gravatar.com",
+    "profile": "https://gravatar.com/{name}",
+    "probe": "https://gravatar.com/{name}.json",
+    "example": "gaearon"
+  },
+  {
+    "id": "gravatar-email",
+    "name": "Gravatar (email)",
+    "host": "gravatar.com",
+    "profile": "https://gravatar.com/avatar/{name}",
+    "probe": "https://gravatar.com/avatar/{name}?d=404",
+    "accepts": "email",
+    "hash": "sha256",
+    "example": ""
+  }
+]

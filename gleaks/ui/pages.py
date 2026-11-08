@@ -8,12 +8,26 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gtk  # noqa: E402
+from gi.repository import Adw, Gtk, Pango  # noqa: E402
 
-from ..core.models import ActionStatus, describe_action  # noqa: E402
+from ..core.models import (  # noqa: E402
+    ActionStatus,
+    EventKind,
+    LogEntry,
+    describe_action,
+    describe_identifier_type,
+)
 from ..core.profile import DuplicateIdentifierError, Profile  # noqa: E402
 from ..i18n import _  # noqa: E402
-from .common import action_row, add_status_selector, boxed_list, clamped, describe_check  # noqa: E402
+from ..providers.base import ExposureProvider  # noqa: E402
+from .common import (  # noqa: E402
+    action_row,
+    add_status_selector,
+    boxed_list,
+    clamped,
+    describe_check,
+    format_time,
+)
 
 
 class _Page(Gtk.Stack):
@@ -31,8 +45,9 @@ class _Page(Gtk.Stack):
 
 
 class DashboardPage(Gtk.Box):
-    def __init__(self):
+    def __init__(self, source_names: dict[str, str]):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
+        self._source_names = source_names
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         self.append(clamped(body))
         self._tiles = {}
@@ -73,11 +88,15 @@ class DashboardPage(Gtk.Box):
         self._checks.remove_all()
         checks = profile.last_checks()
         for check in checks:
-            self._checks.append(action_row(check.identifier_value, describe_check(
-                check.status, check.error_code, check.found, check.completed_at)))
+            result = describe_check(check.status, check.error_code, check.found,
+                                    check.completed_at)
+            source = self._source_names.get(check.provider_id)
+            self._checks.append(action_row(check.identifier_value,
+                                           f"{source}: {result}" if source else result))
         if not checks:
             self._checks.append(action_row(_("No identifiers yet"),
-                                           _("Add an email address in the Identifiers tab.")))
+                                           _("Add an email, nickname or name in the "
+                                             "Identifiers tab.")))
 
 
 class IdentifiersPage(_Page):
@@ -88,8 +107,7 @@ class IdentifiersPage(_Page):
         self._profile: Profile | None = None
         self._loading = False
         add_box = boxed_list()
-        self._entry = Adw.EntryRow(title=_("Add email address"), show_apply_button=True,
-                                   input_purpose=Gtk.InputPurpose.EMAIL)
+        self._entry = Adw.EntryRow(title=_("Add email, nickname or name"), show_apply_button=True)
         self._entry.connect("apply", self._on_add)
         self._entry.connect("entry-activated", self._on_add)
         add_box.append(self._entry)
@@ -105,7 +123,8 @@ class IdentifiersPage(_Page):
         identifiers = profile.identifiers()
         self._list.set_visible(bool(identifiers))
         for identifier in identifiers:
-            row = action_row(identifier.value, identifier.label)
+            row = action_row(identifier.value, identifier.label
+                             or describe_identifier_type(identifier.type))
             switch = Gtk.Switch(active=identifier.enabled, valign=Gtk.Align.CENTER,
                                 tooltip_text=_("Include in scans"))
             switch.update_property([Gtk.AccessibleProperty.LABEL],
@@ -127,9 +146,9 @@ class IdentifiersPage(_Page):
         if not value.strip() or self._profile is None:
             return
         try:
-            self._profile.add_email(value)
+            self._profile.add_identifier(value)
         except DuplicateIdentifierError:
-            self._notify(_("This address is already in the profile."))
+            self._notify(_("This identifier is already in the profile."))
         except ValueError as exc:
             self._notify(str(exc))
         except OSError:
@@ -196,8 +215,11 @@ class ExposuresPage(_Page):
         self._list.set_visible(bool(exposures))
         self._no_match.set_visible(not exposures)
         for exposure in exposures:
-            row = action_row(exposure.title, f"{exposure.identifier_value} · "
-                             f"{exposure.event_date or _('Date unknown')}", activatable=True)
+            detail = {EventKind.WEB_MENTION: _("Public web page"),
+                      EventKind.PROFILE_PAGE: _("Page with this name")}.get(
+                exposure.kind, exposure.event_date or _("Date unknown"))
+            row = action_row(exposure.title, f"{exposure.identifier_value} · {detail}",
+                             activatable=True)
             if exposure.is_new:
                 badge = Gtk.Label(label=_("New"), valign=Gtk.Align.CENTER)
                 badge.add_css_class("accent")
@@ -236,3 +258,81 @@ class ActionsPage(_Page):
                              f"{action.breach_title} · {action.identifier_value}")
             add_status_selector(row, action, self._on_status)
             self._list.append(row)
+
+
+class _Track:
+    """One source's independent progress and log."""
+
+    def __init__(self, parent: Gtk.Box, provider: ExposureProvider):
+        title = Gtk.Label(label=provider.info.name, xalign=0, hexpand=True)
+        title.add_css_class("heading")
+        self.spinner = Gtk.Spinner()
+        self.status = Gtk.Label(xalign=1)
+        self.status.add_css_class("dim-label")
+        header = Gtk.Box(spacing=8)
+        header.append(title)
+        header.append(self.spinner)
+        header.append(self.status)
+        parent.append(header)
+        self.lines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.lines.add_css_class("card")
+        self.lines.add_css_class("log-card")
+        parent.append(self.lines)
+        self.set_status(_("Not started"), False)
+
+    def set_status(self, text: str, running: bool) -> None:
+        self.status.set_label(text)
+        self.spinner.set_spinning(running)
+
+    def clear(self) -> None:
+        while child := self.lines.get_first_child():
+            self.lines.remove(child)
+
+    def prepend(self, entry: LogEntry) -> None:
+        """Newest first, so the current step is visible without scrolling."""
+        line = Gtk.Label(label=f"{format_time(entry.at)}  {entry.message}", xalign=0, wrap=True,
+                         wrap_mode=Pango.WrapMode.WORD_CHAR, use_markup=False)
+        line.add_css_class("log-line")
+        if entry.level in ("warning", "error"):
+            line.add_css_class(entry.level)
+        self.lines.prepend(line)
+        self.lines.set_visible(True)
+
+
+class ActivityPage(Gtk.Box):
+    """Shows, source by source, what each search did and what it sent."""
+
+    def __init__(self, providers: list[ExposureProvider], on_clear: Callable[[], None]):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, vexpand=True)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.append(clamped(body))
+        intro = Gtk.Box(spacing=12)
+        note = Gtk.Label(wrap=True, xalign=0, hexpand=True, label=_(
+            "Each source runs on its own. This log stays inside your encrypted profile."))
+        note.add_css_class("dim-label")
+        note.add_css_class("caption")
+        clear = Gtk.Button(label=_("Clear Log"), valign=Gtk.Align.CENTER)
+        clear.connect("clicked", lambda *_a: on_clear())
+        intro.append(note)
+        intro.append(clear)
+        body.append(intro)
+        self.tracks = {provider.info.id: _Track(body, provider) for provider in providers}
+
+    def refresh(self, profile: Profile) -> None:
+        for provider_id, track in self.tracks.items():
+            track.clear()
+            entries = profile.log_entries(provider_id)
+            for entry in entries:
+                track.prepend(entry)
+            track.lines.set_visible(bool(entries))
+            track.set_status(_("Not started"), False)
+
+    def add_entry(self, entry: LogEntry) -> None:
+        track = self.tracks.get(entry.provider_id)
+        if track is not None:
+            track.prepend(entry)
+
+    def set_status(self, provider_id: str, text: str, running: bool) -> None:
+        track = self.tracks.get(provider_id)
+        if track is not None:
+            track.set_status(text, running)

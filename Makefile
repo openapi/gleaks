@@ -18,7 +18,7 @@ MIMEDIR     := $(DATADIR)/mime/packages
 
 INSTALL     := install
 
-.PHONY: all help check test start run install uninstall deb flatpak clean
+.PHONY: all help check test start run demo-svg check-sites install uninstall deb flatpak clean
 
 all: help
 
@@ -26,6 +26,8 @@ help:
 	@echo "GLeaks targets:"
 	@echo "  make start      Start the app locally from the source tree"
 	@echo "  make test       Run the test suite"
+	@echo "  make demo-svg   Regenerate the animated preview in docs/"
+	@echo "  make check-sites  Check the profile index against the live sites"
 	@echo "  make check      Byte-compile the sources and validate the desktop metadata"
 	@echo "  make install    Install into $(PREFIX)"
 	@echo "  make uninstall  Remove an install from $(PREFIX)"
@@ -46,6 +48,12 @@ start:
 	XDG_DATA_DIRS="$(CURDIR)/data:$${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" $(PYTHON) -m gleaks
 
 run: start
+
+check-sites:
+	$(PYTHON) build-aux/dev/check_sites.py
+
+demo-svg:
+	$(PYTHON) build-aux/dev/make_demo_svg.py docs/gleaks-demo.svg
 
 install:
 	$(INSTALL) -d $(DESTDIR)$(LIBDIR)

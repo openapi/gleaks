@@ -93,6 +93,8 @@ class ProviderInfo:
     attribution: str
     capabilities: tuple[str, ...] = ()
     min_request_interval: float = 0.0
+    category: str = "third-party"  # or "gleaks", for tools GLeaks provides itself
+    destinations: tuple[str, ...] = ()
 
     def mode(self, mode_id: str) -> ProviderMode:
         return next((m for m in self.modes if m.id == mode_id), self.modes[0])
@@ -104,6 +106,8 @@ class CheckContext:
     api_key: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event)
     http: HttpGet = https_get
+    log: Callable[..., None] = lambda message, level="info": None
+    state: dict = field(default_factory=dict)  # Shared by the checks of one scan.
 
 
 class ExposureProvider(ABC):
