@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.openapi.GLeaks</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>GLeaks</name>
+  <summary>Know where your data has leaked</summary>
+  <description>
+    <p>
+      GLeaks helps you discover, understand and manage personal data exposures
+      from your GNOME desktop. Your identifiers and results stay in one encrypted
+      file that belongs to you, with no account and no cloud service.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Encrypted, portable profiles you can move between computers</li>
+      <li>Check email addresses against Have I Been Pwned with your own API key</li>
+      <li>You see exactly what will be sent before anything leaves your computer</li>
+      <li>A private search mode that never sends the full address, on supported plans</li>
+      <li>A lasting history of what each source reported, and when</li>
+      <li>Follow up with suggested actions, without alarmist scores</li>
+    </ul>
+  </description>
+  <developer id="io.github.openapi">
+    <name>GLeaks contributors</name>
+  </developer>
+  <url type="homepage">https://github.com/openapi/gleaks</url>
+  <url type="bugtracker">https://github.com/openapi/gleaks/issues</url>
+  <url type="vcs-browser">https://github.com/openapi/gleaks</url>
+  <url type="contribute">https://github.com/openapi/gleaks/blob/main/CONTRIBUTING.md</url>
+  <branding>
+    <color type="primary" scheme_preference="light">#9ec5f0</color>
+    <color type="primary" scheme_preference="dark">#17365c</color>
+  </branding>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </supports>
+  <launchable type="desktop-id">io.github.openapi.GLeaks.desktop</launchable>
+  <provides>
+    <mediatype>application/x-gleaks-profile</mediatype>
+  </provides>
+  <categories>
+    <category>Utility</category>
+    <category>Security</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-08">
+      <description>
+        <p>First release: encrypted profiles, Have I Been Pwned checks, history and actions.</p>
+      </description>
+    </release>
+  </releases>
+</component>

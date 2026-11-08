@@ -1,0 +1,54 @@
+name: CI
+on:
+  push: { branches: [main, "feat/**"] }
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi python3-cryptography python3-pytest \
+            gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-secret-1 xvfb
+      - run: xvfb-run -a /usr/bin/python3 -m pytest -q
+  metadata:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y appstream desktop-file-utils
+      - run: appstreamcli validate --no-net data/io.github.openapi.GLeaks.metainfo.xml
+      - run: desktop-file-validate data/io.github.openapi.GLeaks.desktop
+  deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: build-aux/deb/build-deb.sh dist
+      - run: |
+          dpkg-deb -I dist/*.deb
+          sudo apt-get update
+          sudo apt-get install -y ./dist/*.deb
+          PYTHONPATH=/usr/share/gleaks python3 -c "import gleaks.core.profile, gleaks.providers; print(gleaks.__version__)"
+  flatpak:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.gnome.Platform//51 org.gnome.Sdk//51
+      - run: |
+          flatpak-builder --user --force-clean --repo=repo build-dir build-aux/flatpak/io.github.openapi.GLeaks.yaml
+          flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            repo gleaks-dev.flatpak io.github.openapi.GLeaks
+      - name: Check the bundled crypto stack inside the sandbox
+        run: |
+          flatpak install --user -y --noninteractive ./gleaks-dev.flatpak
+          flatpak run --command=python3 io.github.openapi.GLeaks -c \
+            "import sys; sys.path.insert(0, '/app/share/gleaks'); import tempfile, os; from gleaks.core.profile import Profile; p = os.path.join(tempfile.mkdtemp(), 'x.gleaks'); Profile.create(p, 'password1', 'x').close(); Profile.open(p, 'password1').close(); print('ok')"
+      # Installable build of every PR: flatpak install --user gleaks-dev.flatpak
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gleaks-flatpak
+          path: gleaks-dev.flatpak
+          retention-days: 14

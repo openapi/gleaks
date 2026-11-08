@@ -1,0 +1,29 @@
+# DRAFT, untested. Build with: snapcraft (needs an Ubuntu 24.04 host or LXD).
+name: gleaks
+base: core24
+adopt-info: gleaks
+summary: Know where your data has leaked
+description: |
+  GLeaks helps you discover, understand and manage personal data exposures.
+  Identifiers and results stay in one encrypted file that belongs to you.
+grade: devel
+confinement: strict
+license: MIT
+
+apps:
+  gleaks:
+    command: usr/bin/gleaks
+    extensions: [gnome]
+    desktop: usr/share/applications/io.github.openapi.GLeaks.desktop
+    plugs: [home, network, desktop, wayland, x11, gsettings, password-manager-service]
+
+parts:
+  gleaks:
+    plugin: nil
+    source: ../..
+    source-type: local
+    override-build: |
+      make install DESTDIR="$CRAFT_PART_INSTALL" PREFIX=/usr PYTHON=/usr/bin/python3
+      craftctl set version="$(sed -n 's/^__version__ = "\(.*\)"/\1/p' gleaks/__init__.py)"
+    build-packages: [make, python3]
+    stage-packages: [python3-gi, python3-cryptography, gir1.2-gtk-4.0, gir1.2-adw-1, gir1.2-secret-1]

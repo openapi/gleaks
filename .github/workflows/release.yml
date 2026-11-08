@@ -1,0 +1,39 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+jobs:
+  deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: build-aux/deb/build-deb.sh dist
+      # Version-independent names so /releases/latest/download/<name> always works.
+      - run: |
+          cp dist/gleaks_*_all.deb dist/gleaks_all.deb
+          cp install.sh dist/install.sh
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/gleaks_*_all.deb
+            dist/gleaks_all.deb
+            dist/install.sh
+          generate_release_notes: true
+  flatpak-bundle:
+    needs: deb          # avoid two jobs racing to create the same release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update && sudo apt-get install -y flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y flathub org.gnome.Platform//51 org.gnome.Sdk//51
+      - run: |
+          flatpak-builder --user --force-clean --repo=repo build-dir build-aux/flatpak/io.github.openapi.GLeaks.yaml
+          flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
+            repo gleaks-${GITHUB_REF_NAME}.flatpak io.github.openapi.GLeaks
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: gleaks-*.flatpak

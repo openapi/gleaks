@@ -1,31 +1,25 @@
-/vendor/
-node_modules/
-npm-debug.log
-yarn-error.log
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
 
-# Laravel 4 specific
-bootstrap/compiled.php
-app/storage/
+# Flatpak
+/build-aux/flatpak-build/
+.flatpak-builder/
+/repo/
 
-# Laravel 5 & Lumen specific
-public/storage
-public/hot
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
 
-# Laravel 5 & Lumen specific with changed public path
-public_html/storage
-public_html/hot
-
-storage/*.key
-.env
-Homestead.yaml
-Homestead.json
-/.vagrant
-.phpunit.result.cache
-/.phpunit.cache
-
-/public/build
-/storage/pail
-.env.backup
-.env.production
-.phpactor.json
-auth.json
+# Development data: never commit a profile, even an encrypted one
+/sandbox/
+*.gleaks
+*.gleaks.bak

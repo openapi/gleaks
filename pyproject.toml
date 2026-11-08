@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gleaks"
+dynamic = ["version"]
+description = "A native GNOME application to discover and manage personal data exposures."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "GLeaks contributors" }]
+keywords = ["gnome", "gtk", "privacy", "data-breach", "hibp"]
+classifiers = [
+    "Environment :: X11 Applications :: GTK",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+]
+# PyGObject, GTK, Libadwaita and libsecret come from the system.
+dependencies = ["cryptography>=41"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+gleaks = "gleaks.app:main"
+
+[tool.setuptools]
+packages = ["gleaks", "gleaks.core", "gleaks.providers", "gleaks.ui"]
+
+[tool.setuptools.dynamic]
+version = { attr = "gleaks.__version__" }
+
+[tool.setuptools.package-data]
+"gleaks.ui" = ["style.css"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

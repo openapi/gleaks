@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=GLeaks
+GenericName=Data Exposure Monitor
+Comment=Discover and manage personal data exposures
+Exec=gleaks %f
+Icon=io.github.openapi.GLeaks
+Terminal=false
+Categories=GNOME;GTK;Utility;Security;
+Keywords=privacy;breach;leak;security;email;pwned;
+StartupNotify=true
+MimeType=application/x-gleaks-profile;
+StartupWMClass=io.github.openapi.GLeaks
+SingleMainWindow=true
